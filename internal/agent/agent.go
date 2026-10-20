@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -72,9 +73,11 @@ type op struct {
 	kind    string
 	device  string
 	trigger string
+	// arg is the container key of container commands.
+	arg string
 }
 
-func (o op) key() string { return o.kind + ":" + o.device }
+func (o op) key() string { return o.kind + ":" + o.device + ":" + o.arg }
 
 // New creates an agent. Nothing happens until Run.
 func New(opts Options) (*Agent, error) {
@@ -132,7 +135,8 @@ func New(opts Options) (*Agent, error) {
 		a.log.Warn("ignoring unreadable state file", "err", err)
 	}
 	a.state = st
-	a.host = &Device{ID: hostID, Name: name, Host: true, Runner: a.local, LastRun: st.LastRuns[hostID]}
+	a.host = &Device{ID: hostID, Name: name, Host: true, Runner: a.local, LastRun: st.LastRuns[hostID],
+		components: st.Components[hostID], lastChecked: lastChecked(st, hostID)}
 	a.devices[hostID] = a.host
 	return a, nil
 }
@@ -165,6 +169,8 @@ func (a *Agent) features() ha.Features {
 		Reboot:   a.cfg.Permissions.Reboot,
 		Restore:  a.cfg.Permissions.Restore && a.cfg.Guests.Snapshot && len(a.providers) > 0,
 		Schedule: a.schedule != nil,
+
+		RestartContainers: a.cfg.Permissions.RestartContainers,
 	}
 }
 
@@ -205,6 +211,12 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 	ticker := time.NewTicker(a.cfg.Checks.Interval)
 	defer ticker.Stop()
+	var stats <-chan time.Time
+	if a.cfg.Checks.StatsInterval > 0 {
+		t := time.NewTicker(a.cfg.Checks.StatsInterval)
+		defer t.Stop()
+		stats = t.C
+	}
 
 	var scheduler *cron.Cron
 	if a.schedule != nil {
@@ -231,6 +243,10 @@ func (a *Agent) Run(ctx context.Context) error {
 			return nil
 		case <-ticker.C:
 			a.enqueue(op{kind: "check_all", trigger: "interval"})
+		case <-stats:
+			for _, d := range a.deviceList() {
+				a.enqueue(op{kind: "stats", device: d.ID})
+			}
 		}
 	}
 }
@@ -322,6 +338,13 @@ func (a *Agent) execute(ctx context.Context, o op) {
 		return
 	}
 	switch o.kind {
+	case "stats":
+		a.refreshStats(ctx, d)
+		a.publish(d, false)
+	case ha.CmdUpgradeContainer:
+		a.upgradeContainer(ctx, d, o.arg, o.trigger)
+	case ha.CmdRestartContainer:
+		a.restartContainer(ctx, d, o.arg, o.trigger)
 	case ha.CmdCheck:
 		a.check(ctx, d)
 	case ha.CmdUpgrade, ha.CmdUpgradePackages, ha.CmdUpgradeContainers:
@@ -367,24 +390,44 @@ func (a *Agent) handleCommand(topic string, payload []byte) {
 		return
 	}
 	deviceID := parts[len(parts)-2]
-	cmd := strings.TrimSpace(string(payload))
+	cmd, arg, _ := strings.Cut(strings.TrimSpace(string(payload)), " ")
 	d := a.device(deviceID)
-	log := a.log.With("device", deviceID, "command", cmd)
+	log := a.log.With("device", deviceID, "command", cmd, "arg", arg)
 	if d == nil {
 		log.Warn("command rejected: unknown device")
 		return
 	}
-	if err := a.allowed(d, cmd); err != nil {
+	if err := a.allowed(d, cmd, arg); err != nil {
 		log.Warn("command rejected", "reason", err)
 		return
 	}
 	log.Info("command accepted")
-	a.enqueue(op{kind: cmd, device: d.ID, trigger: "home assistant"})
+	a.enqueue(op{kind: cmd, device: d.ID, arg: arg, trigger: "home assistant"})
 }
 
-func (a *Agent) allowed(d *Device, cmd string) error {
+func (a *Agent) allowed(d *Device, cmd, arg string) error {
 	p := a.cfg.Permissions
+	if arg != "" && cmd != ha.CmdUpgradeContainer && cmd != ha.CmdRestartContainer {
+		return fmt.Errorf("%s takes no argument", cmd)
+	}
 	switch cmd {
+	case ha.CmdUpgradeContainer, ha.CmdRestartContainer:
+		if cmd == ha.CmdUpgradeContainer && !p.Upgrade {
+			return errors.New("upgrades are not permitted")
+		}
+		if cmd == ha.CmdRestartContainer && !p.RestartContainers {
+			return errors.New("restarting containers is not permitted")
+		}
+		a.mu.Lock()
+		c, ok := d.container(arg)
+		a.mu.Unlock()
+		if !ok {
+			return fmt.Errorf("unknown container %q", arg)
+		}
+		if cmd == ha.CmdUpgradeContainer && c.Project == "" && !c.AutoUpdate {
+			return fmt.Errorf("container %s is not managed by compose or podman auto-update", c.Name)
+		}
+		return nil
 	case ha.CmdCheck:
 		return nil
 	case ha.CmdUpgrade, ha.CmdUpgradePackages, ha.CmdUpgradeContainers:
@@ -430,11 +473,18 @@ func (a *Agent) handleAutoUpgrade(_ string, payload []byte) {
 
 func (a *Agent) saveState() {
 	a.mu.Lock()
-	st := persisted{AutoUpgrade: a.state.AutoUpgrade, LastRuns: map[string]*RunReport{}}
+	st := persisted{AutoUpgrade: a.state.AutoUpgrade, LastRuns: map[string]*RunReport{},
+		Components: map[string]map[string]string{}, Discovery: map[string]ha.Device{}}
 	for id, d := range a.devices {
 		st.Devices = append(st.Devices, id)
 		if d.LastRun != nil {
 			st.LastRuns[id] = d.LastRun
+		}
+		if len(d.components) > 0 {
+			st.Components[id] = d.components
+		}
+		if d.lastChecked != nil {
+			st.Discovery[id] = *d.lastChecked
 		}
 	}
 	a.mu.Unlock()
@@ -454,25 +504,28 @@ func (a *Agent) PublishAll(force bool) {
 // publish sends a device's discovery (when changed) and state.
 func (a *Agent) publish(d *Device, forceDiscovery bool) {
 	a.mu.Lock()
-	payload, err := ha.Payload(a.topics, ha.Origin{Name: "linux-ha-agent", Version: a.version, URL: ProjectURL}, d.haDevice(a.topics.HostID), a.features())
+	origin := ha.Origin{Name: "linux-ha-agent", Version: a.version, URL: ProjectURL}
+	payload, components, err := ha.Payload(a.topics, origin, d.haDevice(a.topics.HostID, a.cfg.Checks.ContainerEntities), a.features(), d.components)
 	sendDiscovery := err == nil && (forceDiscovery || string(payload) != d.discovery)
+	componentsChanged := false
 	if sendDiscovery {
 		d.discovery = string(payload)
+		componentsChanged = !maps.Equal(components, d.components)
+		d.components = components
+		if d.Check != nil {
+			checked := d.haDevice(a.topics.HostID, a.cfg.Checks.ContainerEntities)
+			d.lastChecked = &checked
+		}
 	}
 	var extra map[string]any
 	if d.Host {
-		extra = map[string]any{
-			"agent_version": a.version,
-			"guests":        len(a.devices) - 1,
-			"auto_upgrade":  a.autoUpgrade(),
-			"next_upgrade":  nil,
-		}
-		if a.schedule != nil && a.autoUpgrade() {
-			extra["next_upgrade"] = a.schedule.Next(a.now()).Format(time.RFC3339)
-		}
+		extra = a.hostTotals()
 	}
 	state, stateErr := json.Marshal(d.state(extra))
 	a.mu.Unlock()
+	if componentsChanged {
+		a.saveState()
+	}
 
 	if err != nil || stateErr != nil {
 		a.log.Error("building mqtt payload failed", "device", d.ID, "err", errors.Join(err, stateErr))
@@ -486,6 +539,53 @@ func (a *Agent) publish(d *Device, forceDiscovery bool) {
 	if err := a.mqtt.Publish(a.topics.State(d.ID), true, state); err != nil {
 		a.log.Error("publishing state failed", "device", d.ID, "err", err)
 	}
+	if !d.Host {
+		// The host shows totals over all guests.
+		a.publish(a.host, false)
+	}
+}
+
+// hostTotals are the host-only state fields. Callers hold a.mu.
+func (a *Agent) hostTotals() map[string]any {
+	totals := map[string]any{
+		"agent_version": a.version,
+		"auto_upgrade":  a.autoUpgrade(),
+		"next_upgrade":  nil,
+	}
+	if a.schedule != nil && a.autoUpgrade() {
+		totals["next_upgrade"] = a.schedule.Next(a.now()).Format(time.RFC3339)
+	}
+	guests, running := 0, 0
+	withUpdates, needReboot := []string{}, []string{}
+	updates, images := 0, 0
+	for _, d := range a.devices {
+		updates += d.pendingUpdates()
+		images += d.pendingImages()
+		if d.Host {
+			continue
+		}
+		guests++
+		if d.running() {
+			running++
+		}
+		if d.pendingUpdates()+d.pendingImages() > 0 {
+			withUpdates = append(withUpdates, d.Name)
+		}
+		if d.rebootRequired() {
+			needReboot = append(needReboot, d.Name)
+		}
+	}
+	slices.Sort(withUpdates)
+	slices.Sort(needReboot)
+	totals["guests"] = guests
+	totals["guests_running"] = running
+	totals["guests_with_updates"] = len(withUpdates)
+	totals["guests_with_updates_list"] = withUpdates
+	totals["guests_reboot_required"] = len(needReboot)
+	totals["guests_reboot_required_list"] = needReboot
+	totals["updates_total"] = updates
+	totals["image_updates_total"] = images
+	return totals
 }
 
 // unpublish removes a device from Home Assistant.
@@ -541,7 +641,8 @@ func (a *Agent) syncGuests(ctx context.Context) {
 		seen[id] = true
 		d := a.devices[id]
 		if d == nil {
-			d = &Device{ID: id, Name: guestName(g), Guest: &g, Provider: f.p, Runner: f.p.Runner(g), LastRun: a.state.LastRuns[id]}
+			d = &Device{ID: id, Name: guestName(g), Guest: &g, Provider: f.p, Runner: f.p.Runner(g),
+				LastRun: a.state.LastRuns[id], components: a.state.Components[id], lastChecked: lastChecked(a.state, id)}
 			a.devices[id] = d
 			added = append(added, d)
 			continue
@@ -587,6 +688,13 @@ func (a *Agent) syncGuests(ctx context.Context) {
 	if len(added) > 0 || len(removed) > 0 {
 		a.saveState()
 	}
+}
+
+func lastChecked(st persisted, id string) *ha.Device {
+	if d, ok := st.Discovery[id]; ok {
+		return &d
+	}
+	return nil
 }
 
 func guestID(hostID string, g guest.Guest) string {

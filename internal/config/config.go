@@ -91,6 +91,11 @@ type Proxmox struct {
 type Checks struct {
 	Interval        time.Duration `yaml:"interval"`
 	ContainerImages bool          `yaml:"container_images"`
+	// StatsInterval is how often CPU, memory, disk, load and uptime are
+	// refreshed; 0 only refreshes them with the update checks.
+	StatsInterval time.Duration `yaml:"stats_interval"`
+	// ContainerEntities adds entities for every docker/podman container.
+	ContainerEntities bool `yaml:"container_entities"`
 }
 
 // Upgrade controls upgrades.
@@ -116,9 +121,10 @@ type NixOS struct {
 
 // Permissions decide which actions Home Assistant may trigger.
 type Permissions struct {
-	Upgrade bool `yaml:"upgrade"`
-	Reboot  bool `yaml:"reboot"`
-	Restore bool `yaml:"restore"`
+	Upgrade           bool `yaml:"upgrade"`
+	Reboot            bool `yaml:"reboot"`
+	Restore           bool `yaml:"restore"`
+	RestartContainers bool `yaml:"restart_containers"`
 }
 
 // Default returns the configuration with all defaults applied.
@@ -134,7 +140,7 @@ func Default() Config {
 		},
 		Incus:   Incus{Enabled: "auto"},
 		Proxmox: Proxmox{Enabled: "auto", PollInterval: time.Minute},
-		Checks:  Checks{Interval: 6 * time.Hour, ContainerImages: true},
+		Checks:  Checks{Interval: 6 * time.Hour, ContainerImages: true, StatsInterval: 5 * time.Minute, ContainerEntities: true},
 		Upgrade: Upgrade{
 			AutoUpgrade:    true,
 			RestartGuests:  true,
@@ -219,6 +225,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Checks.Interval < time.Minute {
 		errs = append(errs, errors.New("checks.interval must be at least 1m"))
+	}
+	if c.Checks.StatsInterval != 0 && c.Checks.StatsInterval < 30*time.Second {
+		errs = append(errs, errors.New("checks.stats_interval must be 0 or at least 30s"))
 	}
 	if c.Upgrade.CommandTimeout < time.Minute {
 		errs = append(errs, errors.New("upgrade.command_timeout must be at least 1m"))

@@ -32,10 +32,10 @@ func TestTopics(t *testing.T) {
 func TestPayloadIsValidDeviceDiscovery(t *testing.T) {
 	tp := Topics{DiscoveryPrefix: "homeassistant", Base: "linux-ha-agent", HostID: "lab1"}
 	for _, d := range []Device{
-		{ID: "lab1", Name: "lab1", Host: true, Containers: true},
+		{ID: "lab1", Name: "lab1", Host: true, Engines: true, Temperature: true, Containers: []Container{{Key: "docker_web", Name: "web", Managed: true}}},
 		{ID: "lab1_web", Name: "web", Guest: true, ViaDevice: "lab1"},
 	} {
-		raw, err := Payload(tp, Origin{Name: "linux-ha-agent", Version: "1"}, d, Features{Upgrade: true, Reboot: true, Restore: true, Schedule: true})
+		raw, _, err := Payload(tp, Origin{Name: "linux-ha-agent", Version: "1"}, d, Features{Upgrade: true, Reboot: true, Restore: true, Schedule: true}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -73,5 +73,54 @@ func TestPayloadIsValidDeviceDiscovery(t *testing.T) {
 		if d.Guest && p.Cmps["reboot"]["name"] != "Restart" {
 			t.Errorf("guest reboot button should be called Restart")
 		}
+	}
+}
+
+func TestPayloadRemovesVanishedComponents(t *testing.T) {
+	tp := Topics{DiscoveryPrefix: "homeassistant", Base: "linux-ha-agent", HostID: "lab1"}
+	d := Device{ID: "lab1_web", Name: "web", Guest: true, Engines: true, SharedKernel: true,
+		Containers: []Container{{Key: "docker_a", Name: "a", Managed: true}, {Key: "docker_b", Name: "b"}}}
+	_, first, err := Payload(tp, Origin{}, d, Features{Upgrade: true}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first["ctr_docker_b_update"] != "update" || first["ctr_docker_a_running"] != "binary_sensor" {
+		t.Fatalf("components %v", first)
+	}
+	if _, ok := first["kernel_update"]; ok {
+		t.Error("containers get no kernel update sensor")
+	}
+	if _, ok := first["temperature"]; ok {
+		t.Error("no temperature without a sensor")
+	}
+
+	d.Containers = d.Containers[:1]
+	raw, second, err := Payload(tp, Origin{}, d, Features{Upgrade: true}, first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var p struct {
+		Cmps map[string]map[string]any `json:"cmps"`
+	}
+	if err := json.Unmarshal(raw, &p); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"ctr_docker_b_update", "ctr_docker_b_running"} {
+		if c := p.Cmps[key]; len(c) != 1 || c["p"] == nil {
+			t.Errorf("%s should be a removal entry, got %v", key, c)
+		}
+		if _, ok := second[key]; ok {
+			t.Errorf("%s must not be tracked after removal", key)
+		}
+	}
+	// An unmanaged container has no install action.
+	if _, ok := p.Cmps["ctr_docker_a_update"]["payload_install"]; !ok {
+		t.Error("managed container must be installable")
+	}
+	_, third, _ := Payload(tp, Origin{}, Device{ID: "x", Containers: []Container{{Key: "k", Name: "k"}}}, Features{Upgrade: true}, nil)
+	raw, _, _ = Payload(tp, Origin{}, Device{ID: "x", Containers: []Container{{Key: "k", Name: "k"}}}, Features{Upgrade: true}, third)
+	_ = json.Unmarshal(raw, &p)
+	if _, ok := p.Cmps["ctr_k_update"]["payload_install"]; ok {
+		t.Error("unmanaged container must not be installable")
 	}
 }

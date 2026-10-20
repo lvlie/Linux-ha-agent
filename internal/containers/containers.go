@@ -54,6 +54,8 @@ func NewEngine(name string, r runner.Runner) *Engine {
 
 // Container is a container with the details the agent needs.
 type Container struct {
+	// Engine is "docker" or "podman" (set by the caller that listed it).
+	Engine      string
 	ID          string
 	Name        string
 	Image       string

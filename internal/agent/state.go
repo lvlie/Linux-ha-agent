@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/lvlie/linux-ha-agent/internal/containers"
+	"github.com/lvlie/linux-ha-agent/internal/ha"
 	"github.com/lvlie/linux-ha-agent/internal/packages"
 )
 
@@ -58,15 +59,17 @@ func (r *RunReport) Result() string {
 
 // Check is the latest inspection of a device.
 type Check struct {
-	Time           time.Time
-	Error          string
-	OS             string
-	Packages       *packages.Status
-	Engines        []string
-	Containers     []containers.Container
-	Projects       []containers.Project
-	Images         containers.ImageCheck
-	ImagesChecked  bool
+	Time          time.Time
+	Error         string
+	OS            string
+	Packages      *packages.Status
+	Engines       []string
+	Containers    []containers.Container
+	Projects      []containers.Project
+	Images        containers.ImageCheck
+	ImagesChecked bool
+	// LocalDigests maps image IDs to their registry digests.
+	LocalDigests   map[string][]string
 	RebootRequired bool
 }
 
@@ -75,6 +78,13 @@ type persisted struct {
 	AutoUpgrade *bool                 `json:"auto_upgrade,omitempty"`
 	LastRuns    map[string]*RunReport `json:"last_runs"`
 	Devices     []string              `json:"devices"`
+	// Components published per device (key to platform), so entities that
+	// disappear while the agent is down are still removed.
+	Components map[string]map[string]string `json:"components,omitempty"`
+	// Discovery holds what each device looked like when it was last
+	// checked, so a restart does not briefly drop entities that only
+	// exist after a check (containers, temperature).
+	Discovery map[string]ha.Device `json:"discovery,omitempty"`
 }
 
 func loadState(path string) (persisted, error) {

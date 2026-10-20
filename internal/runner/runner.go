@@ -69,7 +69,14 @@ func (e *ExitError) Error() string {
 	if len(msg) > 500 {
 		msg = "..." + msg[len(msg)-500:]
 	}
-	return fmt.Sprintf("%q exited with %d: %s", e.Cmd.String(), e.Result.ExitCode, msg)
+	cmd := e.Cmd.String()
+	if i := strings.IndexByte(cmd, '\n'); i >= 0 {
+		cmd = cmd[:i] + " ..." // scripts: the first line is enough
+	}
+	if len(cmd) > 120 {
+		cmd = cmd[:117] + "..."
+	}
+	return fmt.Sprintf("%q exited with %d: %s", cmd, e.Result.ExitCode, msg)
 }
 
 // Runner runs commands on one machine.
