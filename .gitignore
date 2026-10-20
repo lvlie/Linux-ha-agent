@@ -1,0 +1,6 @@
+/dist/
+/e2e.test
+/result
+/result-*
+*.out
+coverage.*

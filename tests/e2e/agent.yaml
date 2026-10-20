@@ -1,0 +1,19 @@
+# Agent configuration used by the end-to-end workflow.
+mqtt:
+  url: tcp://127.0.0.1:1883
+  username: e2e_host
+  password_file: /etc/incus-ha-agent/mqtt-password
+host:
+  name: e2e-host
+incus:
+  snapshot_expiry: 1h
+checks:
+  interval: 1h
+upgrade:
+  restart_guests: true
+  command_timeout: 30m
+permissions:
+  upgrade: true
+  reboot: true
+  restore: true
+log_level: debug

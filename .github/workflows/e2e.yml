@@ -1,0 +1,151 @@
+---
+# Runs the agent on a real Incus host (the GitHub runner) with real guests
+# (Ubuntu + docker, Fedora + podman, Debian in another project, Alpine and a
+# stopped container) and a real Mosquitto with the recommended ACL, and drives
+# it over MQTT the way Home Assistant does.
+name: End-to-end (Incus)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 4 * * 1" # weekly, to catch changes in Incus, images and packages
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: Incus ${{ matrix.incus }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        incus: [stable, lts-6.0]
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Build the agent and the test
+        run: |
+          make build
+          go test -tags e2e -c -o e2e.test ./e2e/
+
+      - name: Install Incus from Zabbly and Mosquitto
+        env:
+          CHANNEL: ${{ matrix.incus }}
+        run: |
+          sudo mkdir -p /etc/apt/keyrings
+          sudo curl -fsSL https://pkgs.zabbly.com/key.asc -o /etc/apt/keyrings/zabbly.asc
+          sudo tee /etc/apt/sources.list.d/zabbly-incus.sources >/dev/null <<EOF
+          Enabled: yes
+          Types: deb
+          URIs: https://pkgs.zabbly.com/incus/${CHANNEL}
+          Suites: $(. /etc/os-release && echo "${VERSION_CODENAME}")
+          Components: main
+          Architectures: $(dpkg --print-architecture)
+          Signed-By: /etc/apt/keyrings/zabbly.asc
+          EOF
+          sudo apt-get update -q
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q incus mosquitto mosquitto-clients
+          sudo incus admin init --minimal
+          sudo incus version
+          # Docker on the runner drops forwarded traffic, cutting off the Incus bridge.
+          sudo iptables -P FORWARD ACCEPT
+          sudo ip6tables -P FORWARD ACCEPT
+
+      - name: Configure Mosquitto with the recommended ACL
+        run: |
+          sudo cp tests/e2e/mosquitto.conf /etc/mosquitto/conf.d/e2e.conf
+          sudo cp packaging/mosquitto/acl.conf /etc/mosquitto/e2e.acl
+          sudo mosquitto_passwd -c -b /etc/mosquitto/e2e.passwd homeassistant ha
+          sudo mosquitto_passwd -b /etc/mosquitto/e2e.passwd e2e_host agentpw
+          sudo mosquitto_passwd -b /etc/mosquitto/e2e.passwd intruder intruder
+          sudo chown mosquitto: /etc/mosquitto/e2e.passwd /etc/mosquitto/e2e.acl
+          sudo systemctl restart mosquitto
+
+      - name: Create guests
+        run: sudo tests/e2e/setup.sh
+
+      - name: Start the agent
+        run: |
+          sudo install -d -m 0750 /etc/incus-ha-agent
+          echo agentpw | sudo tee /etc/incus-ha-agent/mqtt-password >/dev/null
+          sudo dist/incus-ha-agent-linux-amd64 -config tests/e2e/agent.yaml -check-config
+          sudo systemd-run --unit incus-ha-agent --property KillMode=process \
+            "$PWD/dist/incus-ha-agent-linux-amd64" -config "$PWD/tests/e2e/agent.yaml"
+
+      - name: Run the end-to-end test
+        run: sudo ./e2e.test -test.v -test.timeout 80m
+
+      - name: Agent log and Incus state
+        if: always()
+        run: |
+          sudo journalctl -u incus-ha-agent --no-pager | tee agent.log | tail -200 || true
+          sudo incus list --all-projects || true
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-${{ matrix.incus }}
+          path: agent.log
+          if-no-files-found: ignore
+
+  nixos-guest:
+    name: NixOS guest (experimental)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    continue-on-error: true
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: make build
+
+      - name: Install Incus
+        run: |
+          sudo mkdir -p /etc/apt/keyrings
+          sudo curl -fsSL https://pkgs.zabbly.com/key.asc -o /etc/apt/keyrings/zabbly.asc
+          echo "deb [signed-by=/etc/apt/keyrings/zabbly.asc] https://pkgs.zabbly.com/incus/stable $(. /etc/os-release && echo "${VERSION_CODENAME}") main" \
+            | sudo tee /etc/apt/sources.list.d/zabbly-incus.list >/dev/null
+          sudo apt-get update -q
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q incus
+          sudo incus admin init --minimal
+          sudo iptables -P FORWARD ACCEPT
+
+      - name: Check a NixOS guest once
+        run: |
+          sudo incus launch images:nixos/unstable nixos -c security.nesting=true
+          sleep 30
+          printf 'mqtt:\n  url: tcp://127.0.0.1:1883\nhost:\n  name: e2e-host\n  manage: false\n' > once.yaml
+          sudo dist/incus-ha-agent-linux-amd64 -config once.yaml -once | tee state.json
+          python3 - <<'PY'
+          import json
+          st = json.load(open("state.json"))["e2e_host_nixos"]
+          assert st["package_manager"] == "nixos", st
+          assert st["check_error"] == "", st["check_error"]
+          print("NixOS guest:", st["os"], "-", st["updates"], "store paths to update")
+          PY

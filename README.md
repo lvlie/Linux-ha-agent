@@ -1,0 +1,249 @@
+# incus-ha-agent
+
+[![CI](https://github.com/lvlie/incus-ha-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/lvlie/incus-ha-agent/actions/workflows/ci.yml)
+[![End-to-end](https://github.com/lvlie/incus-ha-agent/actions/workflows/e2e.yml/badge.svg)](https://github.com/lvlie/incus-ha-agent/actions/workflows/e2e.yml)
+
+A small agent that brings your Linux machines into Home Assistant over MQTT:
+pending updates, reboot status, Docker and Podman containers, and controls to
+upgrade, restart and roll back. On an [Incus](https://linuxcontainers.org/incus/)
+host it also manages **every guest through the Incus API**, so containers and
+VMs need no agent, no SSH and no credentials of their own.
+
+Inspired by [LNXlink](https://github.com/bkbilly/lnxlink), written in Go as a
+single static binary.
+
+```text
+Incus host:  incus-ha-agent ── Incus API (exec, snapshots, events) ──► guests
+                   │
+                   └── MQTT (TLS, one user per host, ACL) ──► Mosquitto ──► Home Assistant ──► HA MCP / Claude
+Other machines: incus-ha-agent (manages only itself)
+```
+
+## What you get in Home Assistant
+
+Every machine and every Incus guest becomes a device. Guests are linked to
+their host (`via_device`).
+
+| Entity | |
+| --- | --- |
+| **System updates** (update entity) | Pending packages; *Install* upgrades them. Shows up under Settings → Updates |
+| **Container images** (update entity) | Images with a newer version in their registry; *Install* pulls them and recreates the compose projects |
+| Pending updates / Security updates | Counts, with the package list as attributes |
+| Reboot required | From `/var/run/reboot-required`, `dnf needs-restarting` or the NixOS booted system |
+| Containers running / Container image updates | Per engine, with compose projects as attributes |
+| Upgrade running, Last upgrade, Last upgrade result | Result has every step as attributes |
+| Buttons | Check for updates, Upgrade, Reboot/Restart, Restore pre-upgrade snapshot (guests) |
+| Host only | Upgrade host and guests, Automatic upgrades switch, Next scheduled upgrade, Managed guests |
+
+Everything is exposed to Assist and so to the Home Assistant MCP server, so
+Claude or any other assistant can answer "what needs updating?" or press
+*Upgrade* with your approval.
+
+## Supported systems
+
+| | Packages | Notes |
+| --- | --- | --- |
+| Ubuntu, Debian and derivatives | apt | security updates detected from the `-security` pockets |
+| Fedora, RHEL, Rocky, Alma, CentOS Stream | dnf (dnf4 and dnf5) | security updates from advisories |
+| NixOS | `nixos-rebuild` | channels (`--upgrade`) or a flake (`--refresh`); garbage collection as cleanup |
+| Others (e.g. Alpine) | – | listed with OS and containers; packages are skipped, not failed |
+
+Containers, on hosts and inside guests:
+
+- **Docker** and **Podman** (a `docker` command that is really podman is detected).
+- Compose projects are found from the labels compose puts on containers, so
+  they are found wherever the files live. Upgrading runs `compose pull` +
+  `compose up -d --remove-orphans` and only reports a change when an image
+  actually changed. `podman compose` and `podman-compose` both work.
+- Podman containers labelled `io.containers.autoupdate` are updated with
+  `podman auto-update`.
+- New images are detected by comparing local image digests with the registry
+  (HEAD requests, which do not count against Docker Hub limits). Containers
+  pinned by digest are left alone; standalone containers are reported but not
+  recreated.
+
+## How upgrades work
+
+For a guest, in order:
+
+1. **Snapshot** through the Incus API (`ha-agent-<time>`, expires after a week).
+   If the snapshot fails, nothing is upgraded.
+2. **Packages**: refresh and upgrade non-interactively (keeping existing config
+   files), then remove unused packages and caches.
+3. **Containers**: pull and recreate compose projects, podman auto-update, prune
+   dangling images.
+4. **Restart** the guest if the upgrade requires it (configurable).
+
+*Upgrade host and guests* (button or schedule) upgrades the host first, then
+every running guest one by one, then reboots the host only if it is needed
+**and** `upgrade.reboot_host` is enabled. Only one operation runs at a time;
+stopped guests are skipped. Incus lifecycle events keep the guest list current
+and trigger a check when a guest starts.
+
+## Install
+
+### Debian, Ubuntu, Fedora, RHEL
+
+```sh
+curl -fsSLO https://github.com/lvlie/incus-ha-agent/releases/latest/download/install.sh
+less install.sh        # read it first
+sudo sh install.sh
+```
+
+The script downloads the binary for your architecture, verifies its SHA-256
+checksum and, if the GitHub CLI is installed, its signed build provenance. It
+installs the systemd unit and an example configuration (never overwriting an
+existing one). Then:
+
+```sh
+sudoedit /etc/incus-ha-agent/config.yaml
+echo 'the-mqtt-password' | sudo tee /etc/incus-ha-agent/mqtt-password >/dev/null
+sudo chmod 600 /etc/incus-ha-agent/mqtt-password
+sudo systemctl enable --now incus-ha-agent
+journalctl -u incus-ha-agent -f
+```
+
+Try it without MQTT: `sudo incus-ha-agent -config config.yaml -once` checks
+everything once and prints the state as JSON.
+
+### NixOS
+
+```nix
+{
+  inputs.incus-ha-agent.url = "github:lvlie/incus-ha-agent";
+
+  outputs = { nixpkgs, incus-ha-agent, ... }: {
+    nixosConfigurations.myhost = nixpkgs.lib.nixosSystem {
+      modules = [
+        incus-ha-agent.nixosModules.default
+        {
+          services.incus-ha-agent = {
+            enable = true;
+            settings = {
+              mqtt = {
+                url = "ssl://mqtt.lan:8883";
+                username = "myhost";
+                password_file = "/run/secrets/incus-ha-agent-mqtt"; # sops-nix, agenix, ...
+              };
+              upgrade.schedule = "30 3 * * 0";
+              nixos.flake = "github:me/nix-config"; # or leave empty for channels
+            };
+          };
+        }
+      ];
+    };
+  };
+}
+```
+
+The configuration is validated when the system is built.
+
+## Configuration
+
+See [`config.example.yaml`](config.example.yaml); only `mqtt.url` is required.
+Unknown keys are rejected so typos do not go unnoticed. Validate with
+`incus-ha-agent -check-config`.
+
+The most important settings:
+
+| Setting | Default | |
+| --- | --- | --- |
+| `upgrade.schedule` | off | Cron schedule for *Upgrade host and guests*, e.g. `30 3 * * 0`; prefix `CRON_TZ=Europe/Amsterdam` for a time zone |
+| `upgrade.reboot_host` | `false` | Reboot the host when needed after an upgrade |
+| `upgrade.restart_guests` | `true` | Restart guests when needed after an upgrade |
+| `incus.snapshot_before_upgrade` | `true` | Snapshot guests before upgrading |
+| `incus.exclude` | none | Guests to leave alone: `name`, `project/name`, wildcards |
+| `permissions.upgrade` / `reboot` / `restore` | `true` / `false` / `false` | What Home Assistant may trigger |
+| `checks.interval` | `6h` | How often to look for updates |
+
+## Security
+
+The agent runs as root, so the design keeps what can reach it small:
+
+- **No listening ports.** The agent only makes outgoing connections to the
+  broker, the container registries and the local Incus socket.
+- **No remote commands.** Home Assistant can only send a fixed set of words
+  (`check`, `upgrade`, `upgrade_packages`, `upgrade_containers`, `upgrade_all`,
+  `reboot`, `restore_snapshot`); anything else is rejected and logged. Nothing
+  received over MQTT ever becomes part of a command line.
+- **Permissions** decide which of those Home Assistant may use; reboots and
+  restores are off by default. Buttons for disallowed actions are not even
+  published.
+- **One MQTT user per host, limited by ACL.** With
+  [`packaging/mosquitto/acl.conf`](packaging/mosquitto/acl.conf) each agent
+  logs in with its host ID and can only publish its own devices and read its
+  own commands: a compromised machine cannot command or impersonate another.
+  This exact ACL runs in the end-to-end tests.
+- **TLS** (`ssl://`), a private CA (`ca_file`) and client certificates are
+  supported. Passwords are read from a file, never from the configuration.
+- **Guests hold nothing**: no agent, no credentials, no network access needed.
+  Every guest upgrade starts with a snapshot you can restore from Home Assistant.
+- **Releases** are built in GitHub Actions with checksums and signed build
+  provenance (`gh attestation verify`). Actions are pinned to commits;
+  Dependabot, govulncheck and zizmor keep dependencies and workflows in check.
+
+Mosquitto setup in short (Home Assistant's Mosquitto add-on works too):
+
+```text
+# /etc/mosquitto/conf.d/agents.conf
+listener 8883
+certfile /etc/mosquitto/certs/server.pem
+keyfile  /etc/mosquitto/certs/server.key
+allow_anonymous false
+password_file /etc/mosquitto/passwd
+acl_file /etc/mosquitto/acl.conf
+```
+
+```sh
+sudo mosquitto_passwd /etc/mosquitto/passwd myhost   # one per agent, named after its host ID
+```
+
+The host ID is the host name in lowercase with everything except `a-z`, `0-9`
+and `_` replaced by `_` (shown in the logs at startup).
+
+## MQTT topics
+
+| Topic | |
+| --- | --- |
+| `homeassistant/device/<host>/<device>/config` | Device discovery (retained) |
+| `incus-ha-agent/<host>/<device>/state` | Device state as JSON (retained) |
+| `incus-ha-agent/<host>/<device>/cmd` | Commands from Home Assistant |
+| `incus-ha-agent/<host>/auto_upgrade/set` | `ON` / `OFF` for the schedule |
+| `incus-ha-agent/<host>/status` | `online` / `offline` (last will) |
+
+Removed guests are removed from Home Assistant automatically, also when they
+were deleted while the agent was down.
+
+## Development
+
+```sh
+make test     # unit and integration tests (race detector)
+make lint     # pre-commit: golangci-lint, yamllint, shellcheck, actionlint, zizmor, ...
+make build    # static binary in dist/
+make nix      # nix flake check
+```
+
+Tests:
+
+- **Unit tests** for every package, with recorded output of apt, dnf, nix,
+  docker and podman.
+- **Agent tests** with simulated machines (Ubuntu + docker, Fedora, Alpine,
+  stopped and excluded guests) covering checks, upgrades, permissions,
+  snapshots, restores, restarts, ordering, lifecycle and persistence.
+- **MQTT integration tests** with an embedded broker: authentication, last
+  will, reconnects, and the ACL (another agent cannot command or spoof).
+- **Registry tests** against an in-memory OCI registry.
+- **End-to-end** ([`e2e.yml`](.github/workflows/e2e.yml)): a GitHub runner
+  becomes an Incus host (stable and 6.0 LTS) with Ubuntu + docker, Fedora +
+  podman, Debian in another project, Alpine and a stopped guest, and a real
+  Mosquitto with the recommended ACL. The test drives the agent over MQTT like
+  Home Assistant: discovery, checks, upgrades, snapshot and restore, restarts,
+  guest lifecycle and an intruder that must be refused. A NixOS guest is
+  tested as well (experimental).
+
+When `go.mod` changes, update `vendorHash` in `nix/package.nix` (set it to
+`lib.fakeHash`, run `nix build`, copy the hash from the error).
+
+## License
+
+GPL-3.0-or-later

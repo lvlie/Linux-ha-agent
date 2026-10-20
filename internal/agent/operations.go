@@ -1,0 +1,309 @@
+package agent
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+
+	"github.com/lvlie/incus-ha-agent/internal/containers"
+	"github.com/lvlie/incus-ha-agent/internal/ha"
+	"github.com/lvlie/incus-ha-agent/internal/osinfo"
+	"github.com/lvlie/incus-ha-agent/internal/packages"
+)
+
+// SnapshotPrefix marks snapshots taken by the agent before upgrades.
+const SnapshotPrefix = "ha-agent-"
+
+func (a *Agent) withTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, a.cfg.Upgrade.CommandTimeout)
+}
+
+func (a *Agent) managesPackages(d *Device) bool {
+	return !d.Host || a.cfg.Host.Manage
+}
+
+func (a *Agent) packageManager(ctx context.Context, d *Device) (packages.Manager, osinfo.Info, error) {
+	info, err := osinfo.Detect(ctx, d.Runner)
+	if err != nil {
+		return nil, info, err
+	}
+	mgr, err := packages.For(info, d.Runner, packages.Options{NixFlake: a.cfg.NixOS.Flake, NixGCOlderThan: a.cfg.NixOS.GCOlderThan})
+	return mgr, info, err
+}
+
+// check inspects a device and publishes the result.
+func (a *Agent) check(ctx context.Context, d *Device) {
+	if !d.running() || !a.managesPackages(d) {
+		a.publish(d, false)
+		return
+	}
+	a.setOperation(d, "checking")
+	ctx, cancel := a.withTimeout(ctx)
+	defer cancel()
+
+	c := &Check{Time: a.now()}
+	var errs []string
+	mgr, info, err := a.packageManager(ctx, d)
+	c.OS = info.PrettyName
+	var unsupported packages.ErrUnsupported
+	switch {
+	case errors.As(err, &unsupported):
+		// Not an error: containers are still managed.
+	case err != nil:
+		errs = append(errs, err.Error())
+	default:
+		st, err := mgr.Check(ctx)
+		if err != nil {
+			errs = append(errs, "packages: "+err.Error())
+		} else {
+			c.Packages = &st
+			c.RebootRequired = st.RebootRequired
+		}
+	}
+
+	if r, ok := a.registry.(interface{ Reset() }); ok {
+		r.Reset()
+	}
+	local := map[string][]string{}
+	for _, e := range containers.Detect(ctx, d.Runner) {
+		c.Engines = append(c.Engines, e.Name)
+		cs, err := e.Containers(ctx)
+		if err != nil {
+			errs = append(errs, e.Name+": "+err.Error())
+			continue
+		}
+		c.Containers = append(c.Containers, cs...)
+		c.Projects = append(c.Projects, containers.Projects(cs)...)
+		if !a.cfg.Checks.ContainerImages || a.registry == nil || len(cs) == 0 {
+			continue
+		}
+		ids := map[string]bool{}
+		for _, ctr := range cs {
+			ids[ctr.ImageID] = true
+		}
+		list := make([]string, 0, len(ids))
+		for id := range ids {
+			list = append(list, id)
+		}
+		digests, err := e.RepoDigests(ctx, list)
+		if err != nil {
+			errs = append(errs, e.Name+" images: "+err.Error())
+			continue
+		}
+		for k, v := range digests {
+			local[k] = v
+		}
+	}
+	if a.cfg.Checks.ContainerImages && a.registry != nil && len(c.Containers) > 0 {
+		c.Images = containers.CheckImages(ctx, c.Containers, local, a.registry)
+		c.ImagesChecked = true
+	}
+	c.Error = strings.Join(errs, "; ")
+	if c.Error != "" {
+		a.log.Warn("check finished with errors", "device", d.ID, "err", c.Error)
+	}
+
+	a.mu.Lock()
+	d.Check = c
+	d.Operation = ""
+	a.mu.Unlock()
+	a.publish(d, false)
+}
+
+// upgrade upgrades one device and reports whether it needs a reboot that was
+// not done (only the host; guests are restarted here when allowed).
+func (a *Agent) upgrade(ctx context.Context, d *Device, action, trigger string) (needsReboot bool) {
+	report := &RunReport{Trigger: trigger, Action: action, Started: a.now()}
+	log := a.log.With("device", d.ID, "action", action, "trigger", trigger)
+	log.Info("upgrade starting")
+	a.setOperation(d, action)
+	defer func() {
+		report.Finished = a.now()
+		report.Success = true
+		for _, s := range report.Steps {
+			report.Success = report.Success && s.OK
+		}
+		a.mu.Lock()
+		d.LastRun = report
+		d.Operation = ""
+		a.mu.Unlock()
+		a.saveState()
+		log.Info("upgrade finished", "success", report.Success, "changed", report.Changed)
+		a.check(ctx, d)
+	}()
+
+	if !d.running() {
+		report.step("start", false, errors.New("guest is not running"), "")
+		return false
+	}
+	if !a.managesPackages(d) {
+		report.step("start", false, errors.New("the host is not managed (host.manage is false)"), "")
+		return false
+	}
+	opCtx, cancel := a.withTimeout(ctx)
+	defer cancel()
+
+	if d.Guest != nil && a.incus != nil && a.cfg.Incus.Snapshot {
+		name := SnapshotPrefix + a.now().UTC().Format("20060102-150405")
+		err := a.incus.CreateSnapshot(opCtx, *d.Guest, name, a.now().Add(a.cfg.Incus.SnapshotKeep))
+		if !report.step("snapshot", false, err, name) {
+			return false // never upgrade without the safety net
+		}
+	}
+
+	var mgr packages.Manager
+	if action == ha.CmdUpgrade || action == ha.CmdUpgradePackages {
+		var err error
+		var unsupported packages.ErrUnsupported
+		mgr, _, err = a.packageManager(opCtx, d)
+		switch {
+		case errors.As(err, &unsupported):
+			report.step("packages", false, nil, "skipped: "+err.Error())
+		case err != nil:
+			report.step("packages", false, err, "")
+			return false
+		default:
+			res, err := mgr.Upgrade(opCtx)
+			if !report.step("packages", res.Changed, err, res.Summary) {
+				return false
+			}
+			if a.cfg.Upgrade.Cleanup {
+				report.step("package cleanup", false, mgr.Cleanup(opCtx), "")
+			}
+		}
+	}
+
+	if (action == ha.CmdUpgrade || action == ha.CmdUpgradeContainers) && a.cfg.Upgrade.Containers {
+		a.upgradeContainers(opCtx, d, report)
+	}
+
+	if mgr == nil {
+		return false
+	}
+	reboot, err := mgr.RebootRequired(opCtx)
+	if err != nil || !reboot {
+		return false
+	}
+	if d.Host {
+		report.step("reboot", false, nil, "reboot required")
+		return true
+	}
+	if !a.cfg.Upgrade.RestartGuests || a.incus == nil {
+		report.step("restart", false, nil, "restart required; automatic restarts are off")
+		return false
+	}
+	report.step("restart", true, a.incus.Restart(opCtx, *d.Guest, a.cfg.Incus.StopTimeout), "restarted because a reboot was required")
+	return false
+}
+
+func (a *Agent) upgradeContainers(ctx context.Context, d *Device, report *RunReport) {
+	for _, e := range containers.Detect(ctx, d.Runner) {
+		cs, err := e.Containers(ctx)
+		if !report.step(e.Name+" containers", false, err, "") {
+			continue
+		}
+		for _, p := range containers.Projects(cs) {
+			changed, err := e.UpgradeProject(ctx, p)
+			detail := "up to date"
+			if changed {
+				detail = "recreated with newer images"
+			}
+			report.step(fmt.Sprintf("%s compose %s", e.Name, p.Name), changed, err, detail)
+		}
+		autoUpdate := false
+		for _, c := range cs {
+			autoUpdate = autoUpdate || c.AutoUpdate
+		}
+		if autoUpdate {
+			changed, err := e.AutoUpdate(ctx)
+			report.step("podman auto-update", changed, err, "")
+		}
+		if a.cfg.Upgrade.Cleanup {
+			changed, err := e.PruneImages(ctx)
+			report.step(e.Name+" image prune", changed, err, "")
+		}
+	}
+}
+
+// upgradeAll upgrades the host first, then every running guest, then
+// reboots the host if needed and allowed.
+func (a *Agent) upgradeAll(ctx context.Context, trigger string) {
+	a.log.Info("upgrade of host and guests starting", "trigger", trigger)
+	hostReboot := false
+	if a.cfg.Host.Manage {
+		hostReboot = a.upgrade(ctx, a.host, ha.CmdUpgrade, trigger)
+	}
+	for _, d := range a.deviceList() {
+		if d.Host || !d.running() {
+			continue
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		a.upgrade(ctx, d, ha.CmdUpgrade, trigger)
+	}
+	if hostReboot && a.cfg.Upgrade.RebootHost {
+		a.rebootHost(ctx, trigger)
+	}
+}
+
+func (a *Agent) rebootHost(ctx context.Context, trigger string) {
+	a.log.Warn("rebooting host", "trigger", trigger)
+	a.setOperation(a.host, "rebooting")
+	a.saveState()
+	if err := a.reboot(ctx); err != nil {
+		a.log.Error("host reboot failed", "err", err)
+		a.setOperation(a.host, "")
+	}
+}
+
+func (a *Agent) restartGuest(ctx context.Context, d *Device, trigger string) {
+	report := &RunReport{Trigger: trigger, Action: ha.CmdReboot, Started: a.now()}
+	a.setOperation(d, "restarting")
+	ctx, cancel := a.withTimeout(ctx)
+	defer cancel()
+	report.step("restart", true, a.incus.Restart(ctx, *d.Guest, a.cfg.Incus.StopTimeout), "")
+	a.finish(ctx, d, report)
+}
+
+func (a *Agent) restore(ctx context.Context, d *Device, trigger string) {
+	report := &RunReport{Trigger: trigger, Action: ha.CmdRestore, Started: a.now()}
+	a.setOperation(d, "restoring")
+	ctx, cancel := a.withTimeout(ctx)
+	defer cancel()
+	snaps, err := a.incus.Snapshots(ctx, *d.Guest)
+	name := ""
+	for _, s := range snaps {
+		if strings.HasPrefix(s.Name, SnapshotPrefix) {
+			name = s.Name
+			break
+		}
+	}
+	switch {
+	case err != nil:
+		report.step("restore", false, err, "")
+	case name == "":
+		report.step("restore", false, errors.New("no pre-upgrade snapshot found"), "")
+	default:
+		report.step("restore", true, a.incus.RestoreSnapshot(ctx, *d.Guest, name), name)
+	}
+	a.finish(ctx, d, report)
+}
+
+func (a *Agent) finish(ctx context.Context, d *Device, report *RunReport) {
+	report.Finished = a.now()
+	report.Success = true
+	for _, s := range report.Steps {
+		report.Success = report.Success && s.OK
+	}
+	a.mu.Lock()
+	d.LastRun = report
+	d.Operation = ""
+	a.mu.Unlock()
+	a.saveState()
+	a.log.Info(report.Action+" finished", "device", d.ID, "success", report.Success)
+	// The guest's status changed; Incus events trigger a sync, and the
+	// check below refreshes everything else.
+	a.check(ctx, d)
+}

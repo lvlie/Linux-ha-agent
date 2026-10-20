@@ -1,0 +1,14 @@
+---
+extends: default
+rules:
+  line-length:
+    max: 160
+  truthy:
+    allowed-values: ["true", "false"]
+    check-keys: false # GitHub Actions uses `on:`
+  comments:
+    min-spaces-from-content: 1
+  document-start:
+    ignore: |
+      config.example.yaml
+      tests/e2e/agent.yaml

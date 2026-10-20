@@ -1,0 +1,5 @@
+---
+config:
+  MD013: false # long lines are fine in prose and tables
+ignores:
+  - LICENSE

@@ -1,0 +1,80 @@
+# incus-ha-agent configuration. Only mqtt.url is required; everything else
+# shows its default. Copy to /etc/incus-ha-agent/config.yaml.
+
+mqtt:
+  # tcp://host:1883, or ssl://host:8883 for TLS (recommended).
+  url: ssl://mqtt.lan:8883
+  # Use the host ID as username so the broker ACL can restrict this agent to
+  # its own topics (see packaging/mosquitto/acl.conf). The host ID is the
+  # lowercase host name with anything but a-z, 0-9 and _ replaced by "_".
+  username: myhost
+  # File containing only the password (chmod 600). Never put it here.
+  password_file: /etc/incus-ha-agent/mqtt-password
+  # ca_file: /etc/incus-ha-agent/ca.pem         # private CA of the broker
+  # client_cert_file: /etc/incus-ha-agent/client.pem  # mutual TLS
+  # client_key_file: /etc/incus-ha-agent/client.key
+  # insecure_skip_verify: false
+  # client_id: incus-ha-agent-myhost
+
+homeassistant:
+  discovery_prefix: homeassistant
+  base_topic: incus-ha-agent
+
+host:
+  # Device name in Home Assistant; defaults to the host name.
+  # name: myhost
+  # Check and upgrade this machine itself, not only its guests.
+  manage: true
+
+incus:
+  # auto: use Incus when its socket exists. true / false to force.
+  enabled: auto
+  # socket: /var/lib/incus/unix.socket
+  instance_types: [container, virtual-machine]
+  # Only these projects (empty: all projects).
+  projects: []
+  # Guests to ignore: "name" or "project/name", shell-style wildcards.
+  exclude: []
+  # Snapshot every guest before upgrading it; Incus deletes it after the expiry.
+  snapshot_before_upgrade: true
+  snapshot_expiry: 168h
+  restart_timeout: 2m
+
+checks:
+  # How often to look for updates (also on startup and when guests start).
+  interval: 6h
+  # Compare container images with their registries (HEAD requests only).
+  container_images: true
+
+upgrade:
+  # Cron schedule for upgrading the host and all guests, e.g. Sundays 03:30.
+  # Prefix with CRON_TZ=Europe/Amsterdam for another time zone. Empty: off.
+  schedule: ""
+  # Initial state of the "Automatic upgrades" switch in Home Assistant.
+  auto_upgrade: true
+  # Reboot the host automatically when an upgrade requires it.
+  reboot_host: false
+  # Restart guests automatically when an upgrade requires it.
+  restart_guests: true
+  # Remove unused packages, package caches and dangling container images.
+  cleanup: true
+  # Pull newer images and recreate compose projects; run podman auto-update.
+  containers: true
+  # Time limit for one step of an operation.
+  command_timeout: 1h
+
+nixos:
+  # Rebuild from this flake instead of channels; "#<hostname>" is appended
+  # unless a fragment is given. The agent runs: nixos-rebuild switch --refresh.
+  flake: ""
+  # Passed to nix-collect-garbage --delete-older-than during cleanup.
+  gc_older_than: 14d
+
+# What Home Assistant (and so anyone who can use it) may trigger.
+permissions:
+  upgrade: true
+  reboot: false
+  restore: false
+
+state_file: /var/lib/incus-ha-agent/state.json
+log_level: info
