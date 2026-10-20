@@ -232,6 +232,10 @@ func TestE2E(t *testing.T) {
 
 	t.Run("system sensors", func(t *testing.T) {
 		for _, d := range []string{hostID, device("docker_web"), device("podman_fed"), device("lab_deb"), device("alpine")} {
+			// The host is checked after the guests and its apt refresh is slow.
+			eventually(t, 10*time.Minute, "system sensors of "+d, func() bool {
+				return b.state(d)["kernel"] != nil
+			})
 			st := b.state(d)
 			for _, field := range []string{"kernel", "arch", "boot_time", "cpu_percent", "memory_percent", "disk_percent", "load_1"} {
 				if st[field] == nil {
