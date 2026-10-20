@@ -157,9 +157,17 @@ func tlsConfig(cfg config.MQTT) (*tls.Config, error) {
 	return tc, nil
 }
 
-// Publish implements Client with QoS 1.
+// Publish implements Client. Everything the agent publishes is retained
+// state that is republished in full after every reconnect, so messages are
+// sent with QoS 0 and not queued while disconnected. This also keeps paho's
+// in-flight store out of play: on reconnect paho resends stored QoS 1
+// messages while its new connection may already be writing them (a data
+// race in paho.mqtt.golang 1.5.1).
 func (p *Paho) Publish(topic string, retained bool, payload []byte) error {
-	tok := p.client.Publish(topic, 1, retained, payload)
+	if !p.client.IsConnectionOpen() {
+		return fmt.Errorf("publishing to %s: not connected", topic)
+	}
+	tok := p.client.Publish(topic, 0, retained, payload)
 	if !tok.WaitTimeout(timeout) {
 		return fmt.Errorf("publishing to %s: timeout", topic)
 	}
