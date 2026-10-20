@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/lvlie/incus-ha-agent/internal/runner"
+	"github.com/lvlie/linux-ha-agent/internal/runner"
 )
 
 func TestParse(t *testing.T) {

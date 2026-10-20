@@ -1,6 +1,6 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 GOARCH  ?= $(shell go env GOARCH)
-BINARY  := dist/incus-ha-agent-linux-$(GOARCH)
+BINARY  := dist/linux-ha-agent-linux-$(GOARCH)
 
 .PHONY: help build test lint vuln e2e-build nix clean
 
@@ -13,7 +13,7 @@ help:
 
 build:
 	CGO_ENABLED=0 GOOS=linux GOARCH=$(GOARCH) go build -trimpath \
-		-ldflags "-s -w -X main.version=$(VERSION)" -o $(BINARY) ./cmd/incus-ha-agent
+		-ldflags "-s -w -X main.version=$(VERSION)" -o $(BINARY) ./cmd/linux-ha-agent
 
 test:
 	go test -race -count=1 ./...

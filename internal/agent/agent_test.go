@@ -14,11 +14,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lvlie/incus-ha-agent/internal/config"
-	"github.com/lvlie/incus-ha-agent/internal/ha"
-	"github.com/lvlie/incus-ha-agent/internal/incus"
-	"github.com/lvlie/incus-ha-agent/internal/mqtt"
-	"github.com/lvlie/incus-ha-agent/internal/runner"
+	"github.com/lvlie/linux-ha-agent/internal/config"
+	"github.com/lvlie/linux-ha-agent/internal/guest"
+	"github.com/lvlie/linux-ha-agent/internal/ha"
+	"github.com/lvlie/linux-ha-agent/internal/mqtt"
+	"github.com/lvlie/linux-ha-agent/internal/runner"
 )
 
 const (
@@ -50,7 +50,7 @@ func (m *machine) ubuntu(f *runner.Fake) {
 			return runner.Result{Stdout: "Inst openssl [3.0.13-1] (3.0.13-2 Ubuntu:24.04/noble-security [amd64])\n" +
 				"Inst tzdata [2025a] (2025b Ubuntu:24.04/noble-updates [all])\n"}
 		}).
-		OnFunc("test -e /var/run/reboot-required", func(runner.Cmd) runner.Result {
+		OnFunc("/var/run/reboot-required", func(runner.Cmd) runner.Result {
 			defer m.lock()()
 			if m.upgraded && (m.rebootedAfter == nil || !m.rebootedAfter()) {
 				return runner.Result{ExitCode: 0}
@@ -146,7 +146,7 @@ func (r registry) Digest(_ context.Context, ref string) (string, error) {
 type env struct {
 	agent   *Agent
 	mqtt    *mqtt.Memory
-	incus   *incus.Fake
+	incus   *guest.Fake
 	host    *runner.Fake
 	hostM   *machine
 	web     *machine
@@ -161,18 +161,18 @@ func newEnv(t *testing.T, mutate func(*config.Config)) *env {
 	cfg := config.Default()
 	cfg.MQTT.URL = "tcp://broker:1883"
 	cfg.StateFile = filepath.Join(t.TempDir(), "state.json")
-	cfg.Incus.Exclude = []string{"build-*"}
+	cfg.Guests.Exclude = []string{"build-*"}
 	cfg.Permissions = config.Permissions{Upgrade: true, Reboot: true, Restore: true}
 	if mutate != nil {
 		mutate(&cfg)
 	}
 	e := &env{mqtt: mqtt.NewMemory(), host: &runner.Fake{}, hostM: &machine{}, web: &machine{}, fed: &machine{}, cfg: cfg}
-	e.incus = incus.NewFake(
-		incus.Guest{Name: "web", Project: "default", Type: "container", Status: "Running"},
-		incus.Guest{Name: "fed", Project: "dev", Type: "container", Status: "Running"},
-		incus.Guest{Name: "alp", Project: "default", Type: "container", Status: "Running"},
-		incus.Guest{Name: "old", Project: "default", Type: "container", Status: "Stopped"},
-		incus.Guest{Name: "build-1", Project: "default", Type: "container", Status: "Running"},
+	e.incus = guest.NewFake(
+		guest.Guest{Name: "web", Project: "default", Type: "container", Status: "Running"},
+		guest.Guest{Name: "fed", Project: "dev", Type: "container", Status: "Running"},
+		guest.Guest{Name: "alp", Project: "default", Type: "container", Status: "Running"},
+		guest.Guest{Name: "old", Project: "default", Type: "container", Status: "Stopped"},
+		guest.Guest{Name: "build-1", Project: "default", Type: "container", Status: "Running"},
 	)
 	e.hostM.ubuntu(e.host)
 	e.hostM.rebootedAfter = func() bool { return e.reboots > 0 }
@@ -185,7 +185,7 @@ func newEnv(t *testing.T, mutate func(*config.Config)) *env {
 	a, err := New(Options{
 		Config:     cfg,
 		MQTT:       e.mqtt,
-		Incus:      e.incus,
+		Providers:  []guest.Provider{e.incus},
 		Local:      e.host,
 		Registry:   registry{"nginx:1.27": "sha256:digest-new"},
 		Hostname:   "Lab1",
@@ -280,7 +280,7 @@ func TestDiscoveryOfHostAndGuests(t *testing.T) {
 
 	web := e.discovery(t, "lab1_web")
 	dev := web["dev"].(map[string]any)
-	if dev["via_device"] != "incus_ha_agent_lab1" || dev["mdl"] != "Ubuntu 24.04.3 LTS (incus container)" {
+	if dev["via_device"] != "linux_ha_agent_lab1" || dev["mdl"] != "Ubuntu 24.04.3 LTS (Incus container)" {
 		t.Errorf("guest device: %v", dev)
 	}
 	for _, key := range []string{"container_update", "image_updates", "running", "restore_snapshot", "reboot"} {
@@ -292,11 +292,11 @@ func TestDiscoveryOfHostAndGuests(t *testing.T) {
 		t.Error("alpine has no container engine and must not get container entities")
 	}
 	update := components(web)["system_update"].(map[string]any)
-	if update["command_topic"] != "incus-ha-agent/lab1/lab1_web/cmd" || update["payload_install"] != ha.CmdUpgradePackages ||
-		update["availability_topic"] != "incus-ha-agent/lab1/status" {
+	if update["command_topic"] != "linux-ha-agent/lab1/lab1_web/cmd" || update["payload_install"] != ha.CmdUpgradePackages ||
+		update["availability_topic"] != "linux-ha-agent/lab1/status" {
 		t.Errorf("update entity: %v", update)
 	}
-	if v, _ := e.mqtt.Retained("incus-ha-agent/lab1/status"); string(v) != "online" {
+	if v, _ := e.mqtt.Retained("linux-ha-agent/lab1/status"); string(v) != "online" {
 		t.Errorf("availability %q", v)
 	}
 }
@@ -359,7 +359,7 @@ func TestUpgradeGuest(t *testing.T) {
 	if len(e.incus.Restarts) != 1 || e.incus.Restarts[0] != "default/web" {
 		t.Errorf("restarts: %v", e.incus.Restarts)
 	}
-	snaps, _ := e.incus.Snapshots(context.Background(), incus.Guest{Name: "web", Project: "default"})
+	snaps, _ := e.incus.Snapshots(context.Background(), guest.Guest{Name: "web", Project: "default"})
 	if len(snaps) != 1 || !strings.HasPrefix(snaps[0].Name, SnapshotPrefix) {
 		t.Errorf("snapshots: %v", snaps)
 	}
@@ -494,12 +494,12 @@ func TestRestoreSnapshot(t *testing.T) {
 func TestGuestLifecycle(t *testing.T) {
 	e := newEnv(t, nil)
 	e.incus.SetGuests(
-		incus.Guest{Name: "web", Project: "default", Type: "container", Status: "Running"},
-		incus.Guest{Name: "old", Project: "default", Type: "container", Status: "Running"},
+		guest.Guest{Name: "web", Project: "default", Type: "container", Status: "Running"},
+		guest.Guest{Name: "old", Project: "default", Type: "container", Status: "Running"},
 	)
 	deadline := time.Now().Add(5 * time.Second)
 	go func() {
-		_ = e.agent.incus.WatchLifecycle(context.Background(), func() { e.agent.enqueue(op{kind: "sync"}) })
+		_ = e.incus.WatchLifecycle(context.Background(), func() { e.agent.enqueue(op{kind: "sync"}) })
 	}()
 	for time.Now().Before(deadline) {
 		e.agent.WaitIdle()
@@ -550,8 +550,8 @@ func TestStateSurvivesRestartAndCleansStaleDevices(t *testing.T) {
 
 	// Same state file and broker, but "alp" was deleted while the agent was down.
 	mem := e.mqtt
-	inc := incus.NewFake(incus.Guest{Name: "web", Project: "default", Type: "container", Status: "Stopped"})
-	a, err := New(Options{Config: e.cfg, MQTT: mem, Incus: inc, Local: e.host, Hostname: "lab1", Logger: quiet})
+	inc := guest.NewFake(guest.Guest{Name: "web", Project: "default", Type: "container", Status: "Stopped"})
+	a, err := New(Options{Config: e.cfg, MQTT: mem, Providers: []guest.Provider{inc}, Local: e.host, Hostname: "lab1", Logger: quiet})
 	if err != nil {
 		t.Fatal(err)
 	}

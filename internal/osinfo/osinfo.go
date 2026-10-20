@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/lvlie/incus-ha-agent/internal/runner"
+	"github.com/lvlie/linux-ha-agent/internal/runner"
 )
 
 // Family groups distributions that are managed the same way.

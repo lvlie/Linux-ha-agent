@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/lvlie/incus-ha-agent/internal/osinfo"
-	"github.com/lvlie/incus-ha-agent/internal/runner"
+	"github.com/lvlie/linux-ha-agent/internal/osinfo"
+	"github.com/lvlie/linux-ha-agent/internal/runner"
 )
 
 // Update is one pending package update.

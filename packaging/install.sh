@@ -1,15 +1,15 @@
 #!/bin/sh
-# Install or update incus-ha-agent from a GitHub release.
+# Install or update linux-ha-agent from a GitHub release.
 #   sh install.sh [version]     (default: latest)
 # Verifies the SHA-256 checksum, and the build provenance when the GitHub CLI
 # is available. Never overwrites an existing configuration.
 set -eu
 
-REPO="lvlie/incus-ha-agent"
+REPO="lvlie/linux-ha-agent"
 VERSION="${1:-latest}"
-BIN=/usr/local/bin/incus-ha-agent
-CONF_DIR=/etc/incus-ha-agent
-UNIT=/etc/systemd/system/incus-ha-agent.service
+BIN=/usr/local/bin/linux-ha-agent
+CONF_DIR=/etc/linux-ha-agent
+UNIT=/etc/systemd/system/linux-ha-agent.service
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "run as root" >&2
@@ -30,7 +30,7 @@ fi
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-asset="incus-ha-agent-linux-$arch"
+asset="linux-ha-agent-linux-$arch"
 curl -fsSL -o "$tmp/$asset" "$base/$asset"
 curl -fsSL -o "$tmp/SHA256SUMS" "$base/SHA256SUMS"
 (cd "$tmp" && grep " $asset\$" SHA256SUMS | sha256sum -c -)
@@ -46,11 +46,11 @@ install -d -m 0750 "$CONF_DIR"
 if [ ! -e "$CONF_DIR/config.yaml" ]; then
   curl -fsSL -o "$CONF_DIR/config.yaml" "$base/config.example.yaml"
   chmod 0640 "$CONF_DIR/config.yaml"
-  echo "wrote $CONF_DIR/config.yaml: edit it, then: systemctl enable --now incus-ha-agent"
+  echo "wrote $CONF_DIR/config.yaml: edit it, then: systemctl enable --now linux-ha-agent"
 fi
-curl -fsSL -o "$UNIT" "$base/incus-ha-agent.service"
+curl -fsSL -o "$UNIT" "$base/linux-ha-agent.service"
 systemctl daemon-reload
-if systemctl is-active --quiet incus-ha-agent; then
-  systemctl restart incus-ha-agent
+if systemctl is-active --quiet linux-ha-agent; then
+  systemctl restart linux-ha-agent
 fi
 "$BIN" -version

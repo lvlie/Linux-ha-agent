@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/lvlie/incus-ha-agent/internal/containers"
-	"github.com/lvlie/incus-ha-agent/internal/packages"
+	"github.com/lvlie/linux-ha-agent/internal/containers"
+	"github.com/lvlie/linux-ha-agent/internal/packages"
 )
 
 // Step is one step of an upgrade.

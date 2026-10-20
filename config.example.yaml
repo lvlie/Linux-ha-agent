@@ -1,5 +1,5 @@
-# incus-ha-agent configuration. Only mqtt.url is required; everything else
-# shows its default. Copy to /etc/incus-ha-agent/config.yaml.
+# linux-ha-agent configuration. Only mqtt.url is required; everything else
+# shows its default. Copy to /etc/linux-ha-agent/config.yaml.
 
 mqtt:
   # tcp://host:1883, or ssl://host:8883 for TLS (recommended).
@@ -9,16 +9,16 @@ mqtt:
   # lowercase host name with anything but a-z, 0-9 and _ replaced by "_".
   username: myhost
   # File containing only the password (chmod 600). Never put it here.
-  password_file: /etc/incus-ha-agent/mqtt-password
-  # ca_file: /etc/incus-ha-agent/ca.pem         # private CA of the broker
-  # client_cert_file: /etc/incus-ha-agent/client.pem  # mutual TLS
-  # client_key_file: /etc/incus-ha-agent/client.key
+  password_file: /etc/linux-ha-agent/mqtt-password
+  # ca_file: /etc/linux-ha-agent/ca.pem         # private CA of the broker
+  # client_cert_file: /etc/linux-ha-agent/client.pem  # mutual TLS
+  # client_key_file: /etc/linux-ha-agent/client.key
   # insecure_skip_verify: false
-  # client_id: incus-ha-agent-myhost
+  # client_id: linux-ha-agent-myhost
 
 homeassistant:
   discovery_prefix: homeassistant
-  base_topic: incus-ha-agent
+  base_topic: linux-ha-agent
 
 host:
   # Device name in Home Assistant; defaults to the host name.
@@ -26,19 +26,32 @@ host:
   # Check and upgrade this machine itself, not only its guests.
   manage: true
 
+# Settings for the guests of all virtualisation platforms below.
+guests:
+  types: [container, virtual-machine]
+  # Guests to ignore: "name", "project/name" (Incus) or the VMID (Proxmox),
+  # shell-style wildcards allowed.
+  exclude: []
+  # Snapshot every guest before upgrading it; removed again after the expiry.
+  # On Proxmox VE this needs storage with snapshot support (ZFS, LVM-thin, Ceph...).
+  snapshot_before_upgrade: true
+  snapshot_expiry: 168h
+  restart_timeout: 2m
+
 incus:
   # auto: use Incus when its socket exists. true / false to force.
   enabled: auto
   # socket: /var/lib/incus/unix.socket
-  instance_types: [container, virtual-machine]
   # Only these projects (empty: all projects).
   projects: []
-  # Guests to ignore: "name" or "project/name", shell-style wildcards.
-  exclude: []
-  # Snapshot every guest before upgrading it; Incus deletes it after the expiry.
-  snapshot_before_upgrade: true
-  snapshot_expiry: 168h
-  restart_timeout: 2m
+
+proxmox:
+  # auto: use Proxmox VE when /etc/pve and pvesh exist. true / false to force.
+  enabled: auto
+  # Node name; defaults to the short host name.
+  # node: pve1
+  # How often to look for guests that were created, removed, started or stopped.
+  poll_interval: 1m
 
 checks:
   # How often to look for updates (also on startup and when guests start).
@@ -76,5 +89,5 @@ permissions:
   reboot: false
   restore: false
 
-state_file: /var/lib/incus-ha-agent/state.json
+state_file: /var/lib/linux-ha-agent/state.json
 log_level: info

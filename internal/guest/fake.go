@@ -1,4 +1,4 @@
-package incus
+package guest
 
 import (
 	"context"
@@ -7,11 +7,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lvlie/incus-ha-agent/internal/runner"
+	"github.com/lvlie/linux-ha-agent/internal/runner"
 )
 
-// Fake is an in-memory Client for tests.
+// Fake is an in-memory Provider for tests.
 type Fake struct {
+	platform  string
 	mu        sync.Mutex
 	guests    []Guest
 	runners   map[string]*runner.Fake
@@ -27,10 +28,19 @@ type Fake struct {
 // NewFake returns a Fake with the given guests. Each guest gets its own
 // runner.Fake, available through FakeRunner.
 func NewFake(guests ...Guest) *Fake {
-	f := &Fake{runners: map[string]*runner.Fake{}, snapshots: map[string][]Snapshot{}, events: make(chan struct{}, 16)}
+	f := &Fake{platform: "incus", runners: map[string]*runner.Fake{}, snapshots: map[string][]Snapshot{}, events: make(chan struct{}, 16)}
 	f.SetGuests(guests...)
 	return f
 }
+
+// WithPlatform sets the platform name reported by the fake.
+func (f *Fake) WithPlatform(p string) *Fake {
+	f.platform = p
+	return f
+}
+
+// Platform implements Provider.
+func (f *Fake) Platform() string { return f.platform }
 
 // SetGuests replaces the guest list and emits a lifecycle event.
 func (f *Fake) SetGuests(guests ...Guest) {
@@ -58,19 +68,19 @@ func (f *Fake) FakeRunner(key string) *runner.Fake {
 	return f.runners[key]
 }
 
-// Guests implements Client.
+// Guests implements Provider.
 func (f *Fake) Guests(context.Context) ([]Guest, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return slices.Clone(f.guests), nil
 }
 
-// Runner implements Client.
+// Runner implements Provider.
 func (f *Fake) Runner(g Guest) runner.Runner {
 	return f.FakeRunner(g.Key())
 }
 
-// CreateSnapshot implements Client.
+// CreateSnapshot implements Provider.
 func (f *Fake) CreateSnapshot(_ context.Context, g Guest, name string, _ time.Time) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -81,14 +91,14 @@ func (f *Fake) CreateSnapshot(_ context.Context, g Guest, name string, _ time.Ti
 	return nil
 }
 
-// Snapshots implements Client.
+// Snapshots implements Provider.
 func (f *Fake) Snapshots(_ context.Context, g Guest) ([]Snapshot, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return slices.Clone(f.snapshots[g.Key()]), nil
 }
 
-// RestoreSnapshot implements Client.
+// RestoreSnapshot implements Provider.
 func (f *Fake) RestoreSnapshot(_ context.Context, g Guest, name string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -101,7 +111,7 @@ func (f *Fake) RestoreSnapshot(_ context.Context, g Guest, name string) error {
 	return fmt.Errorf("snapshot %q of %s not found", name, g.Key())
 }
 
-// Restart implements Client.
+// Restart implements Provider.
 func (f *Fake) Restart(_ context.Context, g Guest, _ time.Duration) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -109,7 +119,7 @@ func (f *Fake) Restart(_ context.Context, g Guest, _ time.Duration) error {
 	return nil
 }
 
-// WatchLifecycle implements Client.
+// WatchLifecycle implements Provider.
 func (f *Fake) WatchLifecycle(ctx context.Context, fn func()) error {
 	for {
 		select {

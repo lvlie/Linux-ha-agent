@@ -1,20 +1,20 @@
 [Unit]
-Description=Home Assistant agent for Incus hosts and Linux machines
-Documentation=https://github.com/lvlie/incus-ha-agent
+Description=Home Assistant agent for Linux machines, Incus and Proxmox VE
+Documentation=https://github.com/lvlie/linux-ha-agent
 Wants=network-online.target
 After=network-online.target incus.service docker.service podman.service
 
 [Service]
-ExecStartPre=/usr/local/bin/incus-ha-agent -config /etc/incus-ha-agent/config.yaml -check-config
-ExecStart=/usr/local/bin/incus-ha-agent -config /etc/incus-ha-agent/config.yaml
+ExecStartPre=/usr/local/bin/linux-ha-agent -config /etc/linux-ha-agent/config.yaml -check-config
+ExecStart=/usr/local/bin/linux-ha-agent -config /etc/linux-ha-agent/config.yaml
 Restart=on-failure
 RestartSec=10
 # If the agent is stopped or restarted (for example by the very upgrade it is
 # running), let a running package manager finish instead of killing it.
 KillMode=process
-StateDirectory=incus-ha-agent
+StateDirectory=linux-ha-agent
 StateDirectoryMode=0700
-ConfigurationDirectory=incus-ha-agent
+ConfigurationDirectory=linux-ha-agent
 ConfigurationDirectoryMode=0750
 UMask=0077
 # The agent runs package managers and container engines as root, so most

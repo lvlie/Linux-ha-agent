@@ -1,5 +1,5 @@
 {
-  description = "Home Assistant MQTT agent for Incus hosts and Linux machines";
+  description = "Home Assistant MQTT agent for Linux machines, Incus and Proxmox VE hosts";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -15,8 +15,8 @@
     in
     {
       packages = forAllSystems (pkgs: {
-        incus-ha-agent = pkgs.callPackage ./nix/package.nix { inherit version; };
-        default = self.packages.${pkgs.stdenv.hostPlatform.system}.incus-ha-agent;
+        linux-ha-agent = pkgs.callPackage ./nix/package.nix { inherit version; };
+        default = self.packages.${pkgs.stdenv.hostPlatform.system}.linux-ha-agent;
       });
 
       nixosModules.default = import ./nix/module.nix self;

@@ -13,9 +13,11 @@ func TestDefaultsAndOverrides(t *testing.T) {
 mqtt:
   url: ssl://mqtt.lan:8883
   username: incus1
-incus:
-  exclude: [build-*, lab/scratch]
+guests:
+  exclude: [build-*, lab/scratch, "105"]
   snapshot_expiry: 72h
+proxmox:
+  node: pve1
 checks:
   interval: 30m
 upgrade:
@@ -26,17 +28,18 @@ permissions:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.HomeAssistant.DiscoveryPrefix != "homeassistant" || cfg.HomeAssistant.BaseTopic != "incus-ha-agent" {
+	if cfg.HomeAssistant.DiscoveryPrefix != "homeassistant" || cfg.HomeAssistant.BaseTopic != "linux-ha-agent" {
 		t.Errorf("discovery defaults not applied: %+v", cfg.HomeAssistant)
 	}
-	if cfg.Incus.SnapshotKeep != 72*time.Hour || cfg.Checks.Interval != 30*time.Minute {
-		t.Errorf("durations not parsed: %v %v", cfg.Incus.SnapshotKeep, cfg.Checks.Interval)
+	if cfg.Guests.SnapshotKeep != 72*time.Hour || cfg.Checks.Interval != 30*time.Minute {
+		t.Errorf("durations not parsed: %v %v", cfg.Guests.SnapshotKeep, cfg.Checks.Interval)
 	}
 	if !cfg.Permissions.Upgrade || !cfg.Permissions.Reboot || cfg.Permissions.Restore {
 		t.Errorf("permissions wrong: %+v", cfg.Permissions)
 	}
-	if !cfg.Host.Manage || cfg.Incus.Enabled != "auto" || !cfg.Incus.Snapshot {
-		t.Errorf("defaults lost: %+v %+v", cfg.Host, cfg.Incus)
+	if !cfg.Host.Manage || cfg.Incus.Enabled != "auto" || !cfg.Guests.Snapshot || cfg.Proxmox.Enabled != "auto" ||
+		cfg.Proxmox.Node != "pve1" || cfg.Proxmox.PollInterval != time.Minute {
+		t.Errorf("defaults lost: %+v %+v %+v %+v", cfg.Host, cfg.Incus, cfg.Guests, cfg.Proxmox)
 	}
 }
 
@@ -49,7 +52,11 @@ homeassistant:
   base_topic: "bad topic/#"
 incus:
   enabled: maybe
-  instance_types: [container, pod]
+proxmox:
+  enabled: sometimes
+  poll_interval: 1s
+guests:
+  types: [container, pod]
 checks:
   interval: 1s
 upgrade:
@@ -62,7 +69,7 @@ log_level: loud
 		t.Fatal("expected errors")
 	}
 	for _, want := range []string{
-		"mqtt.url", "password_file requires", "base_topic", "incus.enabled", `unknown type "pod"`,
+		"mqtt.url", "password_file requires", "base_topic", "incus.enabled", "proxmox.enabled", "proxmox.poll_interval", `unknown type "pod"`,
 		"checks.interval", "upgrade.schedule", "gc_older_than", "log_level",
 	} {
 		if !strings.Contains(err.Error(), want) {
@@ -97,22 +104,25 @@ func TestPassword(t *testing.T) {
 }
 
 func TestGuestSelection(t *testing.T) {
-	i := Incus{InstanceTypes: []string{"container"}, Projects: []string{"default", "lab"}, Exclude: []string{"build-*", "lab/scratch"}}
+	g := Guests{Types: []string{"container"}, Exclude: []string{"build-*", "lab/scratch", "105"}}
+	i := Incus{Projects: []string{"default", "lab"}}
 	cases := []struct {
-		project, name, typ string
-		want               bool
+		project, name, id, typ string
+		want                   bool
 	}{
-		{"default", "web", "container", true},
-		{"default", "build-42", "container", false},
-		{"lab", "scratch", "container", false},
-		{"default", "scratch", "container", true},
-		{"default", "vm1", "virtual-machine", false},
-		{"other", "web", "container", false},
+		{"default", "web", "", "container", true},
+		{"default", "build-42", "", "container", false},
+		{"lab", "scratch", "", "container", false},
+		{"default", "scratch", "", "container", true},
+		{"default", "vm1", "", "virtual-machine", false},
+		{"other", "web", "", "container", false},
+		{"", "media", "104", "container", true},
+		{"", "media", "105", "container", false},
 	}
 	for _, c := range cases {
-		got := i.Includes(c.project, c.typ) && !i.Excluded(c.project, c.name)
+		got := g.Includes(c.typ) && !g.Excluded(c.project, c.name, c.id) && (c.project == "" || i.InProject(c.project))
 		if got != c.want {
-			t.Errorf("%s/%s (%s): got %v want %v", c.project, c.name, c.typ, got, c.want)
+			t.Errorf("%s/%s/%s (%s): got %v want %v", c.project, c.name, c.id, c.typ, got, c.want)
 		}
 	}
 }

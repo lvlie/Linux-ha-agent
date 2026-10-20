@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/lvlie/incus-ha-agent/internal/runner"
+	"github.com/lvlie/linux-ha-agent/internal/runner"
 )
 
 // Dnf manages Fedora, RHEL and derivatives. It works with dnf4 and dnf5.

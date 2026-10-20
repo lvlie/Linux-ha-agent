@@ -17,7 +17,7 @@ import (
 	paho "github.com/eclipse/paho.mqtt.golang"
 	"github.com/eclipse/paho.mqtt.golang/packets"
 
-	"github.com/lvlie/incus-ha-agent/internal/config"
+	"github.com/lvlie/linux-ha-agent/internal/config"
 )
 
 // Handler handles a received message.

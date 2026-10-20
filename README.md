@@ -1,28 +1,31 @@
-# incus-ha-agent
+# linux-ha-agent
 
-[![CI](https://github.com/lvlie/incus-ha-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/lvlie/incus-ha-agent/actions/workflows/ci.yml)
-[![End-to-end](https://github.com/lvlie/incus-ha-agent/actions/workflows/e2e.yml/badge.svg)](https://github.com/lvlie/incus-ha-agent/actions/workflows/e2e.yml)
+[![CI](https://github.com/lvlie/linux-ha-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/lvlie/linux-ha-agent/actions/workflows/ci.yml)
+[![End-to-end](https://github.com/lvlie/linux-ha-agent/actions/workflows/e2e.yml/badge.svg)](https://github.com/lvlie/linux-ha-agent/actions/workflows/e2e.yml)
 
 A small agent that brings your Linux machines into Home Assistant over MQTT:
 pending updates, reboot status, Docker and Podman containers, and controls to
 upgrade, restart and roll back. On an [Incus](https://linuxcontainers.org/incus/)
-host it also manages **every guest through the Incus API**, so containers and
-VMs need no agent, no SSH and no credentials of their own.
+or [Proxmox VE](https://www.proxmox.com/en/proxmox-virtual-environment) host it
+also manages **every guest through the platform itself** (the Incus API, or
+`pct`/`qm` on Proxmox), so containers and VMs need no agent, no SSH and no
+credentials of their own.
 
 Inspired by [LNXlink](https://github.com/bkbilly/lnxlink), written in Go as a
 single static binary.
 
 ```text
-Incus host:  incus-ha-agent ── Incus API (exec, snapshots, events) ──► guests
+Incus host:    linux-ha-agent ── Incus API (exec, snapshots, events) ──► containers, VMs
+Proxmox node:  linux-ha-agent ── pct exec / QEMU guest agent, pvesh ──► LXC containers, VMs
                    │
                    └── MQTT (TLS, one user per host, ACL) ──► Mosquitto ──► Home Assistant ──► HA MCP / Claude
-Other machines: incus-ha-agent (manages only itself)
+Other machines: linux-ha-agent (manages only itself)
 ```
 
 ## What you get in Home Assistant
 
-Every machine and every Incus guest becomes a device. Guests are linked to
-their host (`via_device`).
+Every machine and every guest becomes a device. Guests are linked to their
+host (`via_device`).
 
 | Entity | |
 | --- | --- |
@@ -48,6 +51,13 @@ Claude or any other assistant can answer "what needs updating?" or press
 | NixOS | `nixos-rebuild` | channels (`--upgrade`) or a flake (`--refresh`); garbage collection as cleanup |
 | Others (e.g. Alpine) | – | listed with OS and containers; packages are skipped, not failed |
 
+Virtualisation platforms (both can be used on one machine; detected automatically):
+
+| | Guests | How commands run inside | Snapshots | Changes noticed by |
+| --- | --- | --- | --- | --- |
+| Incus | containers and VMs, all projects | Incus API exec (like `incus exec`) | Incus API, with native expiry | Incus event stream |
+| Proxmox VE | LXC containers and QEMU VMs on the local node (templates skipped) | `pct exec`; `qm guest exec` through the QEMU guest agent | `pct`/`qm snapshot`; the agent removes its own expired snapshots | polling `pvesh` (every minute) |
+
 Containers, on hosts and inside guests:
 
 - **Docker** and **Podman** (a `docker` command that is really podman is detected).
@@ -66,7 +76,7 @@ Containers, on hosts and inside guests:
 
 For a guest, in order:
 
-1. **Snapshot** through the Incus API (`ha-agent-<time>`, expires after a week).
+1. **Snapshot** through the platform (`ha-agent-<time>`, removed after a week).
    If the snapshot fails, nothing is upgraded.
 2. **Packages**: refresh and upgrade non-interactively (keeping existing config
    files), then remove unused packages and caches.
@@ -77,15 +87,33 @@ For a guest, in order:
 *Upgrade host and guests* (button or schedule) upgrades the host first, then
 every running guest one by one, then reboots the host only if it is needed
 **and** `upgrade.reboot_host` is enabled. Only one operation runs at a time;
-stopped guests are skipped. Incus lifecycle events keep the guest list current
-and trigger a check when a guest starts.
+stopped guests are skipped. Lifecycle events (Incus) or polling (Proxmox) keep
+the guest list current and trigger a check when a guest starts.
+
+### Proxmox VE notes
+
+- Install the agent on **every node**; each manages the guests running on it.
+  Guests that migrate move to the other node's agent automatically.
+- The node itself is Debian: it is upgraded with `apt-get dist-upgrade`, as
+  Proxmox requires. Without a subscription, switch to the
+  `pve-no-subscription` repository, or the enterprise repository makes every
+  check fail with 401.
+- Debian does not create `/var/run/reboot-required`; a pending reboot is
+  detected by comparing the newest installed kernel with the running one.
+- **VMs** need the QEMU guest agent: enable it in the VM options and install
+  `qemu-guest-agent` inside. VMs without it (and non-Linux VMs) are listed
+  with their state, but are not checked or upgraded.
+- **Snapshots** need storage that supports them (ZFS, LVM-thin, Ceph, qcow2).
+  On other storage the snapshot fails and the upgrade does not run; set
+  `guests.snapshot_before_upgrade: false` for those guests' hosts if you
+  accept upgrading without one.
 
 ## Install
 
 ### Debian, Ubuntu, Fedora, RHEL
 
 ```sh
-curl -fsSLO https://github.com/lvlie/incus-ha-agent/releases/latest/download/install.sh
+curl -fsSLO https://github.com/lvlie/linux-ha-agent/releases/latest/download/install.sh
 less install.sh        # read it first
 sudo sh install.sh
 ```
@@ -96,34 +124,34 @@ installs the systemd unit and an example configuration (never overwriting an
 existing one). Then:
 
 ```sh
-sudoedit /etc/incus-ha-agent/config.yaml
-echo 'the-mqtt-password' | sudo tee /etc/incus-ha-agent/mqtt-password >/dev/null
-sudo chmod 600 /etc/incus-ha-agent/mqtt-password
-sudo systemctl enable --now incus-ha-agent
-journalctl -u incus-ha-agent -f
+sudoedit /etc/linux-ha-agent/config.yaml
+echo 'the-mqtt-password' | sudo tee /etc/linux-ha-agent/mqtt-password >/dev/null
+sudo chmod 600 /etc/linux-ha-agent/mqtt-password
+sudo systemctl enable --now linux-ha-agent
+journalctl -u linux-ha-agent -f
 ```
 
-Try it without MQTT: `sudo incus-ha-agent -config config.yaml -once` checks
+Try it without MQTT: `sudo linux-ha-agent -config config.yaml -once` checks
 everything once and prints the state as JSON.
 
 ### NixOS
 
 ```nix
 {
-  inputs.incus-ha-agent.url = "github:lvlie/incus-ha-agent";
+  inputs.linux-ha-agent.url = "github:lvlie/linux-ha-agent";
 
-  outputs = { nixpkgs, incus-ha-agent, ... }: {
+  outputs = { nixpkgs, linux-ha-agent, ... }: {
     nixosConfigurations.myhost = nixpkgs.lib.nixosSystem {
       modules = [
-        incus-ha-agent.nixosModules.default
+        linux-ha-agent.nixosModules.default
         {
-          services.incus-ha-agent = {
+          services.linux-ha-agent = {
             enable = true;
             settings = {
               mqtt = {
                 url = "ssl://mqtt.lan:8883";
                 username = "myhost";
-                password_file = "/run/secrets/incus-ha-agent-mqtt"; # sops-nix, agenix, ...
+                password_file = "/run/secrets/linux-ha-agent-mqtt"; # sops-nix, agenix, ...
               };
               upgrade.schedule = "30 3 * * 0";
               nixos.flake = "github:me/nix-config"; # or leave empty for channels
@@ -142,7 +170,7 @@ The configuration is validated when the system is built.
 
 See [`config.example.yaml`](config.example.yaml); only `mqtt.url` is required.
 Unknown keys are rejected so typos do not go unnoticed. Validate with
-`incus-ha-agent -check-config`.
+`linux-ha-agent -check-config`.
 
 The most important settings:
 
@@ -151,8 +179,9 @@ The most important settings:
 | `upgrade.schedule` | off | Cron schedule for *Upgrade host and guests*, e.g. `30 3 * * 0`; prefix `CRON_TZ=Europe/Amsterdam` for a time zone |
 | `upgrade.reboot_host` | `false` | Reboot the host when needed after an upgrade |
 | `upgrade.restart_guests` | `true` | Restart guests when needed after an upgrade |
-| `incus.snapshot_before_upgrade` | `true` | Snapshot guests before upgrading |
-| `incus.exclude` | none | Guests to leave alone: `name`, `project/name`, wildcards |
+| `guests.snapshot_before_upgrade` | `true` | Snapshot guests before upgrading |
+| `guests.exclude` | none | Guests to leave alone: `name`, `project/name` (Incus), VMID (Proxmox), wildcards |
+| `incus.enabled` / `proxmox.enabled` | `auto` | Manage Incus or Proxmox VE guests when found |
 | `permissions.upgrade` / `reboot` / `restore` | `true` / `false` / `false` | What Home Assistant may trigger |
 | `checks.interval` | `6h` | How often to look for updates |
 
@@ -176,7 +205,8 @@ The agent runs as root, so the design keeps what can reach it small:
   This exact ACL runs in the end-to-end tests.
 - **TLS** (`ssl://`), a private CA (`ca_file`) and client certificates are
   supported. Passwords are read from a file, never from the configuration.
-- **Guests hold nothing**: no agent, no credentials, no network access needed.
+- **Guests hold nothing**: no agent, no credentials, no network access needed
+  (Proxmox VMs only need the standard QEMU guest agent).
   Every guest upgrade starts with a snapshot you can restore from Home Assistant.
 - **Releases** are built in GitHub Actions with checksums and signed build
   provenance (`gh attestation verify`). Actions are pinned to commits;
@@ -206,10 +236,10 @@ and `_` replaced by `_` (shown in the logs at startup).
 | Topic | |
 | --- | --- |
 | `homeassistant/device/<host>/<device>/config` | Device discovery (retained) |
-| `incus-ha-agent/<host>/<device>/state` | Device state as JSON (retained) |
-| `incus-ha-agent/<host>/<device>/cmd` | Commands from Home Assistant |
-| `incus-ha-agent/<host>/auto_upgrade/set` | `ON` / `OFF` for the schedule |
-| `incus-ha-agent/<host>/status` | `online` / `offline` (last will) |
+| `linux-ha-agent/<host>/<device>/state` | Device state as JSON (retained) |
+| `linux-ha-agent/<host>/<device>/cmd` | Commands from Home Assistant |
+| `linux-ha-agent/<host>/auto_upgrade/set` | `ON` / `OFF` for the schedule |
+| `linux-ha-agent/<host>/status` | `online` / `offline` (last will) |
 
 Removed guests are removed from Home Assistant automatically, also when they
 were deleted while the agent was down.
@@ -229,7 +259,9 @@ Tests:
   docker and podman.
 - **Agent tests** with simulated machines (Ubuntu + docker, Fedora, Alpine,
   stopped and excluded guests) covering checks, upgrades, permissions,
-  snapshots, restores, restarts, ordering, lifecycle and persistence.
+  snapshots, restores, restarts, ordering, lifecycle and persistence, plus a
+  simulated Proxmox VE node (LXC through `pct exec`, a VM through the guest
+  agent, a VM without guest agent, templates).
 - **MQTT integration tests** with an embedded broker: authentication, last
   will, reconnects, and the ACL (another agent cannot command or spoof).
 - **Registry tests** against an in-memory OCI registry.
@@ -239,7 +271,9 @@ Tests:
   Mosquitto with the recommended ACL. The test drives the agent over MQTT like
   Home Assistant: discovery, checks, upgrades, snapshot and restore, restarts,
   guest lifecycle and an intruder that must be refused. A NixOS guest is
-  tested as well (experimental).
+  tested as well (experimental). Proxmox VE cannot run on GitHub's runners, so
+  it is covered by the simulated node, whose `pvesh`, `pct` and `qm` output
+  follows the documented formats; it has not yet run against a real node.
 
 When `go.mod` changes, update `vendorHash` in `nix/package.nix` (set it to
 `lib.fakeHash`, run `nix build`, copy the hash from the error).

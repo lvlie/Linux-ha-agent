@@ -16,45 +16,47 @@ import (
 
 	"github.com/robfig/cron/v3"
 
-	"github.com/lvlie/incus-ha-agent/internal/config"
-	"github.com/lvlie/incus-ha-agent/internal/containers"
-	"github.com/lvlie/incus-ha-agent/internal/ha"
-	"github.com/lvlie/incus-ha-agent/internal/incus"
-	"github.com/lvlie/incus-ha-agent/internal/mqtt"
-	"github.com/lvlie/incus-ha-agent/internal/runner"
+	"github.com/lvlie/linux-ha-agent/internal/config"
+	"github.com/lvlie/linux-ha-agent/internal/containers"
+	"github.com/lvlie/linux-ha-agent/internal/guest"
+	"github.com/lvlie/linux-ha-agent/internal/ha"
+	"github.com/lvlie/linux-ha-agent/internal/mqtt"
+	"github.com/lvlie/linux-ha-agent/internal/runner"
 )
 
 // ProjectURL is shown in Home Assistant as the origin of the entities.
-const ProjectURL = "https://github.com/lvlie/incus-ha-agent"
+const ProjectURL = "https://github.com/lvlie/linux-ha-agent"
 
 // Options configure an Agent.
 type Options struct {
-	Config   config.Config
-	MQTT     mqtt.Client
-	Incus    incus.Client // nil when Incus is not used
-	Local    runner.Runner
-	Registry containers.DigestResolver
-	Hostname string
-	Version  string
-	Logger   *slog.Logger
-	Now      func() time.Time
+	Config config.Config
+	MQTT   mqtt.Client
+	// Providers manage the guests of virtualisation platforms on this host
+	// (Incus, Proxmox VE). Empty on machines without guests.
+	Providers []guest.Provider
+	Local     runner.Runner
+	Registry  containers.DigestResolver
+	Hostname  string
+	Version   string
+	Logger    *slog.Logger
+	Now       func() time.Time
 	// RebootHost reboots the machine; defaults to `systemctl reboot`.
 	RebootHost func(ctx context.Context) error
 }
 
 // Agent manages the host and its Incus guests.
 type Agent struct {
-	cfg      config.Config
-	mqtt     mqtt.Client
-	incus    incus.Client
-	local    runner.Runner
-	registry containers.DigestResolver
-	version  string
-	log      *slog.Logger
-	now      func() time.Time
-	reboot   func(ctx context.Context) error
-	topics   ha.Topics
-	schedule cron.Schedule
+	cfg       config.Config
+	mqtt      mqtt.Client
+	providers []guest.Provider
+	local     runner.Runner
+	registry  containers.DigestResolver
+	version   string
+	log       *slog.Logger
+	now       func() time.Time
+	reboot    func(ctx context.Context) error
+	topics    ha.Topics
+	schedule  cron.Schedule
 
 	mu      sync.Mutex
 	devices map[string]*Device
@@ -80,18 +82,18 @@ func New(opts Options) (*Agent, error) {
 		return nil, errors.New("agent needs an MQTT client and a local runner")
 	}
 	a := &Agent{
-		cfg:      opts.Config,
-		mqtt:     opts.MQTT,
-		incus:    opts.Incus,
-		local:    opts.Local,
-		registry: opts.Registry,
-		version:  opts.Version,
-		log:      opts.Logger,
-		now:      opts.Now,
-		reboot:   opts.RebootHost,
-		devices:  map[string]*Device{},
-		pending:  map[string]bool{},
-		ops:      make(chan op, 256),
+		cfg:       opts.Config,
+		mqtt:      opts.MQTT,
+		providers: opts.Providers,
+		local:     opts.Local,
+		registry:  opts.Registry,
+		version:   opts.Version,
+		log:       opts.Logger,
+		now:       opts.Now,
+		reboot:    opts.RebootHost,
+		devices:   map[string]*Device{},
+		pending:   map[string]bool{},
+		ops:       make(chan op, 256),
 	}
 	a.idle = sync.NewCond(&a.mu)
 	if a.log == nil {
@@ -161,7 +163,7 @@ func (a *Agent) features() ha.Features {
 	return ha.Features{
 		Upgrade:  a.cfg.Permissions.Upgrade,
 		Reboot:   a.cfg.Permissions.Reboot,
-		Restore:  a.cfg.Permissions.Restore && a.cfg.Incus.Snapshot && a.incus != nil,
+		Restore:  a.cfg.Permissions.Restore && a.cfg.Guests.Snapshot && len(a.providers) > 0,
 		Schedule: a.schedule != nil,
 	}
 }
@@ -189,7 +191,7 @@ func (a *Agent) Start(ctx context.Context) error {
 	a.publish(a.host, false)
 
 	go a.worker(ctx)
-	if a.incus != nil {
+	if len(a.providers) > 0 {
 		a.enqueue(op{kind: "sync"})
 	}
 	a.enqueue(op{kind: "check_all", trigger: "startup"})
@@ -219,8 +221,8 @@ func (a *Agent) Run(ctx context.Context) error {
 		scheduler.Start()
 		defer scheduler.Stop()
 	}
-	if a.incus != nil {
-		go a.watchIncus(ctx)
+	for _, p := range a.providers {
+		go a.watchGuests(ctx, p)
 	}
 	for {
 		select {
@@ -233,13 +235,13 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 }
 
-func (a *Agent) watchIncus(ctx context.Context) {
+func (a *Agent) watchGuests(ctx context.Context, p guest.Provider) {
 	for ctx.Err() == nil {
-		err := a.incus.WatchLifecycle(ctx, func() { a.enqueue(op{kind: "sync"}) })
+		err := p.WatchLifecycle(ctx, func() { a.enqueue(op{kind: "sync"}) })
 		if ctx.Err() != nil {
 			return
 		}
-		a.log.Warn("incus event stream ended, reconnecting", "err", err)
+		a.log.Warn("watching guests failed, retrying", "platform", p.Platform(), "err", err)
 		select {
 		case <-ctx.Done():
 			return
@@ -405,7 +407,7 @@ func (a *Agent) allowed(d *Device, cmd string) error {
 			return errors.New("snapshot restores are not permitted")
 		}
 		if d.Guest == nil {
-			return errors.New("only incus guests can be restored")
+			return errors.New("only guests can be restored")
 		}
 	default:
 		return fmt.Errorf("unknown command %q", cmd)
@@ -452,7 +454,7 @@ func (a *Agent) PublishAll(force bool) {
 // publish sends a device's discovery (when changed) and state.
 func (a *Agent) publish(d *Device, forceDiscovery bool) {
 	a.mu.Lock()
-	payload, err := ha.Payload(a.topics, ha.Origin{Name: "incus-ha-agent", Version: a.version, URL: ProjectURL}, d.haDevice(a.topics.HostID), a.features())
+	payload, err := ha.Payload(a.topics, ha.Origin{Name: "linux-ha-agent", Version: a.version, URL: ProjectURL}, d.haDevice(a.topics.HostID), a.features())
 	sendDiscovery := err == nil && (forceDiscovery || string(payload) != d.discovery)
 	if sendDiscovery {
 		d.discovery = string(payload)
@@ -499,33 +501,56 @@ func (a *Agent) setOperation(d *Device, operation string) {
 	a.publish(d, false)
 }
 
-// syncGuests reconciles devices with the guests Incus reports.
+func (a *Agent) managed(g guest.Guest) bool {
+	if !a.cfg.Guests.Includes(g.Type) || a.cfg.Guests.Excluded(g.Project, g.Name, g.ID) {
+		return false
+	}
+	return g.Platform != "incus" || a.cfg.Incus.InProject(g.Project)
+}
+
+// syncGuests reconciles devices with the guests the platforms report.
 func (a *Agent) syncGuests(ctx context.Context) {
-	guests, err := a.incus.Guests(ctx)
-	if err != nil {
-		a.log.Error("listing incus guests failed", "err", err)
-		return
+	type found struct {
+		g guest.Guest
+		p guest.Provider
+	}
+	var all []found
+	for _, p := range a.providers {
+		guests, err := p.Guests(ctx)
+		if err != nil {
+			// Keep the current devices rather than removing them all.
+			a.log.Error("listing guests failed", "platform", p.Platform(), "err", err)
+			return
+		}
+		for _, g := range guests {
+			if a.managed(g) {
+				all = append(all, found{g, p})
+			}
+		}
 	}
 	seen := map[string]bool{a.host.ID: true}
 	var added, started []*Device
 	a.mu.Lock()
-	for _, g := range guests {
-		if !a.cfg.Incus.Includes(g.Project, g.Type) || a.cfg.Incus.Excluded(g.Project, g.Name) {
+	for _, f := range all {
+		g := f.g
+		id := guestID(a.topics.HostID, g)
+		if seen[id] {
+			a.log.Warn("two guests map to the same device, ignoring the second", "device", id, "platform", g.Platform)
 			continue
 		}
-		id := guestID(a.topics.HostID, g)
 		seen[id] = true
-		guest := g
 		d := a.devices[id]
 		if d == nil {
-			d = &Device{ID: id, Name: guestName(g), Guest: &guest, Runner: a.incus.Runner(g), LastRun: a.state.LastRuns[id]}
+			d = &Device{ID: id, Name: guestName(g), Guest: &g, Provider: f.p, Runner: f.p.Runner(g), LastRun: a.state.LastRuns[id]}
 			a.devices[id] = d
 			added = append(added, d)
 			continue
 		}
 		wasRunning := d.running()
-		d.Guest = &guest
-		if !wasRunning && guest.Running() {
+		d.Guest = &g
+		d.Provider = f.p
+		d.Runner = f.p.Runner(g)
+		if !wasRunning && g.Running() {
 			started = append(started, d)
 		}
 	}
@@ -564,14 +589,14 @@ func (a *Agent) syncGuests(ctx context.Context) {
 	}
 }
 
-func guestID(hostID string, g incus.Guest) string {
+func guestID(hostID string, g guest.Guest) string {
 	if g.Project == "" || g.Project == "default" {
 		return ha.Slug(hostID, g.Name)
 	}
 	return ha.Slug(hostID, g.Project, g.Name)
 }
 
-func guestName(g incus.Guest) string {
+func guestName(g guest.Guest) string {
 	if g.Project == "" || g.Project == "default" {
 		return g.Name
 	}

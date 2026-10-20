@@ -11,7 +11,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/lvlie/incus-ha-agent/internal/runner"
+	"github.com/lvlie/linux-ha-agent/internal/runner"
 )
 
 // Compose labels set by docker compose and podman-compose.

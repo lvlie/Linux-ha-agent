@@ -20,22 +20,22 @@ func TestSlug(t *testing.T) {
 }
 
 func TestTopics(t *testing.T) {
-	tp := Topics{DiscoveryPrefix: "homeassistant", Base: "incus-ha-agent", HostID: "lab1"}
+	tp := Topics{DiscoveryPrefix: "homeassistant", Base: "linux-ha-agent", HostID: "lab1"}
 	if tp.Config("lab1_web") != "homeassistant/device/lab1/lab1_web/config" ||
-		tp.Command("lab1_web") != "incus-ha-agent/lab1/lab1_web/cmd" ||
-		tp.CommandFilter() != "incus-ha-agent/lab1/+/cmd" ||
-		tp.Availability() != "incus-ha-agent/lab1/status" {
+		tp.Command("lab1_web") != "linux-ha-agent/lab1/lab1_web/cmd" ||
+		tp.CommandFilter() != "linux-ha-agent/lab1/+/cmd" ||
+		tp.Availability() != "linux-ha-agent/lab1/status" {
 		t.Fatalf("unexpected topics %+v", tp)
 	}
 }
 
 func TestPayloadIsValidDeviceDiscovery(t *testing.T) {
-	tp := Topics{DiscoveryPrefix: "homeassistant", Base: "incus-ha-agent", HostID: "lab1"}
+	tp := Topics{DiscoveryPrefix: "homeassistant", Base: "linux-ha-agent", HostID: "lab1"}
 	for _, d := range []Device{
 		{ID: "lab1", Name: "lab1", Host: true, Containers: true},
 		{ID: "lab1_web", Name: "web", Guest: true, ViaDevice: "lab1"},
 	} {
-		raw, err := Payload(tp, Origin{Name: "incus-ha-agent", Version: "1"}, d, Features{Upgrade: true, Reboot: true, Restore: true, Schedule: true})
+		raw, err := Payload(tp, Origin{Name: "linux-ha-agent", Version: "1"}, d, Features{Upgrade: true, Reboot: true, Restore: true, Schedule: true})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -47,7 +47,7 @@ func TestPayloadIsValidDeviceDiscovery(t *testing.T) {
 		if err := json.Unmarshal(raw, &p); err != nil {
 			t.Fatal(err)
 		}
-		if p.O["name"] != "incus-ha-agent" || p.Dev["name"] != d.Name {
+		if p.O["name"] != "linux-ha-agent" || p.Dev["name"] != d.Name {
 			t.Errorf("%s: bad device/origin %v %v", d.ID, p.Dev, p.O)
 		}
 		ids := map[string]bool{}
@@ -57,7 +57,7 @@ func TestPayloadIsValidDeviceDiscovery(t *testing.T) {
 				t.Errorf("%s/%s: invalid component %v", d.ID, key, c)
 			}
 			ids[uid] = true
-			if c["availability_topic"] != "incus-ha-agent/lab1/status" {
+			if c["availability_topic"] != "linux-ha-agent/lab1/status" {
 				t.Errorf("%s/%s: no availability", d.ID, key)
 			}
 			_, hasState := c["state_topic"]

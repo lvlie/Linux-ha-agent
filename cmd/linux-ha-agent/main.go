@@ -1,4 +1,4 @@
-// Command incus-ha-agent publishes update information for a Linux host and
+// Command linux-ha-agent publishes update information for a Linux host and
 // its Incus guests to Home Assistant over MQTT, and runs upgrades on request
 // or on a schedule.
 package main
@@ -18,12 +18,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/lvlie/incus-ha-agent/internal/agent"
-	"github.com/lvlie/incus-ha-agent/internal/config"
-	"github.com/lvlie/incus-ha-agent/internal/containers"
-	"github.com/lvlie/incus-ha-agent/internal/incus"
-	"github.com/lvlie/incus-ha-agent/internal/mqtt"
-	"github.com/lvlie/incus-ha-agent/internal/runner"
+	"github.com/lvlie/linux-ha-agent/internal/agent"
+	"github.com/lvlie/linux-ha-agent/internal/config"
+	"github.com/lvlie/linux-ha-agent/internal/containers"
+	"github.com/lvlie/linux-ha-agent/internal/guest"
+	"github.com/lvlie/linux-ha-agent/internal/incus"
+	"github.com/lvlie/linux-ha-agent/internal/mqtt"
+	"github.com/lvlie/linux-ha-agent/internal/proxmox"
+	"github.com/lvlie/linux-ha-agent/internal/runner"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
@@ -33,13 +35,13 @@ const defaultIncusSocket = "/var/lib/incus/unix.socket"
 
 func main() {
 	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, "incus-ha-agent:", err)
+		fmt.Fprintln(os.Stderr, "linux-ha-agent:", err)
 		os.Exit(1)
 	}
 }
 
 func run() error {
-	configPath := flag.String("config", "/etc/incus-ha-agent/config.yaml", "configuration file")
+	configPath := flag.String("config", "/etc/linux-ha-agent/config.yaml", "configuration file")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	checkConfig := flag.Bool("check-config", false, "validate the configuration and exit")
 	once := flag.Bool("once", false, "check all devices once, print their state as JSON and exit (no MQTT)")
@@ -69,22 +71,22 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	incusClient, err := connectIncus(cfg.Incus, log)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	providers, err := guestProviders(ctx, cfg, log)
 	if err != nil {
 		return err
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
 	opts := agent.Options{
-		Config:   cfg,
-		Incus:    incusClient,
-		Local:    runner.Local{},
-		Registry: &containers.Registry{},
-		Hostname: hostname,
-		Version:  version,
-		Logger:   log,
+		Config:    cfg,
+		Providers: providers,
+		Local:     runner.Local{},
+		Registry:  &containers.Registry{},
+		Hostname:  hostname,
+		Version:   version,
+		Logger:    log,
 	}
 	if *once {
 		return runOnce(ctx, opts)
@@ -112,7 +114,11 @@ func run() error {
 		return err
 	}
 	close(ready)
-	log.Info("incus-ha-agent starting", "version", version, "host", hostname, "incus", incusClient != nil)
+	platforms := make([]string, 0, len(providers))
+	for _, p := range providers {
+		platforms = append(platforms, p.Platform())
+	}
+	log.Info("linux-ha-agent starting", "version", version, "host", hostname, "host_id", hostID(cfg, hostname), "guests", platforms)
 	return a.Run(ctx)
 }
 
@@ -128,10 +134,48 @@ func clientID(cfg config.Config, hostname string) string {
 	if cfg.MQTT.ClientID != "" {
 		return cfg.MQTT.ClientID
 	}
-	return "incus-ha-agent-" + hostID(cfg, hostname)
+	return "linux-ha-agent-" + hostID(cfg, hostname)
 }
 
-func connectIncus(cfg config.Incus, log *slog.Logger) (incus.Client, error) {
+// guestProviders connects to the virtualisation platforms on this machine.
+func guestProviders(ctx context.Context, cfg config.Config, log *slog.Logger) ([]guest.Provider, error) {
+	var providers []guest.Provider
+	inc, err := connectIncus(cfg.Incus, log)
+	if err != nil {
+		return nil, err
+	}
+	if inc != nil {
+		providers = append(providers, inc)
+	}
+	pve, err := connectProxmox(ctx, cfg.Proxmox, log)
+	if err != nil {
+		return nil, err
+	}
+	if pve != nil {
+		providers = append(providers, pve)
+	}
+	return providers, nil
+}
+
+func connectProxmox(ctx context.Context, cfg config.Proxmox, log *slog.Logger) (*proxmox.Provider, error) {
+	local := runner.Local{}
+	switch cfg.Enabled {
+	case "false":
+		return nil, nil
+	case "auto":
+		if !proxmox.Detect(ctx, local) {
+			return nil, nil
+		}
+	}
+	p, err := proxmox.New(ctx, local, cfg.Node, cfg.PollInterval)
+	if err != nil {
+		return nil, err
+	}
+	log.Info("managing proxmox ve guests", "node", p.Node())
+	return p, nil
+}
+
+func connectIncus(cfg config.Incus, log *slog.Logger) (*incus.API, error) {
 	if cfg.Enabled == "false" {
 		return nil, nil
 	}
@@ -144,7 +188,7 @@ func connectIncus(cfg config.Incus, log *slog.Logger) (incus.Client, error) {
 	}
 	if cfg.Enabled == "auto" {
 		if _, err := os.Stat(socket); errors.Is(err, fs.ErrNotExist) { //nolint:gosec // the socket path comes from the configuration
-			log.Info("no incus socket found, managing only this machine", "socket", socket)
+			log.Debug("no incus socket found", "socket", socket)
 			return nil, nil
 		}
 	}
@@ -159,7 +203,7 @@ func runOnce(ctx context.Context, opts agent.Options) error {
 	memory := mqtt.NewMemory()
 	opts.MQTT = memory
 	// Keep the real state file untouched.
-	dir, err := os.MkdirTemp("", "incus-ha-agent-once")
+	dir, err := os.MkdirTemp("", "linux-ha-agent-once")
 	if err != nil {
 		return err
 	}

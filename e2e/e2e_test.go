@@ -18,14 +18,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lvlie/incus-ha-agent/internal/config"
-	"github.com/lvlie/incus-ha-agent/internal/mqtt"
+	"github.com/lvlie/linux-ha-agent/internal/config"
+	"github.com/lvlie/linux-ha-agent/internal/mqtt"
 )
 
 var (
 	brokerURL = env("E2E_MQTT_URL", "tcp://127.0.0.1:1883")
 	hostID    = env("E2E_HOST_ID", "e2e_host")
-	base      = "incus-ha-agent/" + hostID
+	base      = "linux-ha-agent/" + hostID
 )
 
 func env(key, def string) string {

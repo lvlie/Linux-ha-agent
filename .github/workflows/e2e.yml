@@ -83,11 +83,11 @@ jobs:
 
       - name: Start the agent
         run: |
-          sudo install -d -m 0750 /etc/incus-ha-agent
-          echo agentpw | sudo tee /etc/incus-ha-agent/mqtt-password >/dev/null
-          sudo dist/incus-ha-agent-linux-amd64 -config tests/e2e/agent.yaml -check-config
-          sudo systemd-run --unit incus-ha-agent --property KillMode=process \
-            "$PWD/dist/incus-ha-agent-linux-amd64" -config "$PWD/tests/e2e/agent.yaml"
+          sudo install -d -m 0750 /etc/linux-ha-agent
+          echo agentpw | sudo tee /etc/linux-ha-agent/mqtt-password >/dev/null
+          sudo dist/linux-ha-agent-linux-amd64 -config tests/e2e/agent.yaml -check-config
+          sudo systemd-run --unit linux-ha-agent --property KillMode=process \
+            "$PWD/dist/linux-ha-agent-linux-amd64" -config "$PWD/tests/e2e/agent.yaml"
 
       - name: Run the end-to-end test
         run: sudo ./e2e.test -test.v -test.timeout 80m
@@ -95,7 +95,7 @@ jobs:
       - name: Agent log and Incus state
         if: always()
         run: |
-          sudo journalctl -u incus-ha-agent --no-pager | tee agent.log | tail -200 || true
+          sudo journalctl -u linux-ha-agent --no-pager | tee agent.log | tail -200 || true
           sudo incus list --all-projects || true
 
       - name: Upload logs
@@ -141,7 +141,7 @@ jobs:
           sudo incus launch images:nixos/unstable nixos -c security.nesting=true
           sleep 30
           printf 'mqtt:\n  url: tcp://127.0.0.1:1883\nhost:\n  name: e2e-host\n  manage: false\n' > once.yaml
-          sudo dist/incus-ha-agent-linux-amd64 -config once.yaml -once | tee state.json
+          sudo dist/linux-ha-agent-linux-amd64 -config once.yaml -once | tee state.json
           python3 - <<'PY'
           import json
           st = json.load(open("state.json"))["e2e_host_nixos"]

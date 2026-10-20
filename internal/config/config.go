@@ -22,7 +22,9 @@ type Config struct {
 	MQTT          MQTT          `yaml:"mqtt"`
 	HomeAssistant HomeAssistant `yaml:"homeassistant"`
 	Host          Host          `yaml:"host"`
+	Guests        Guests        `yaml:"guests"`
 	Incus         Incus         `yaml:"incus"`
+	Proxmox       Proxmox       `yaml:"proxmox"`
 	Checks        Checks        `yaml:"checks"`
 	Upgrade       Upgrade       `yaml:"upgrade"`
 	NixOS         NixOS         `yaml:"nixos"`
@@ -58,17 +60,31 @@ type Host struct {
 	Manage bool `yaml:"manage"`
 }
 
+// Guests are the settings shared by all virtualisation platforms.
+type Guests struct {
+	Types        []string      `yaml:"types"`
+	Exclude      []string      `yaml:"exclude"`
+	Snapshot     bool          `yaml:"snapshot_before_upgrade"`
+	SnapshotKeep time.Duration `yaml:"snapshot_expiry"`
+	StopTimeout  time.Duration `yaml:"restart_timeout"`
+}
+
 // Incus settings.
 type Incus struct {
 	// Enabled is "auto" (use Incus when the socket exists), "true" or "false".
-	Enabled       string        `yaml:"enabled"`
-	Socket        string        `yaml:"socket"`
-	InstanceTypes []string      `yaml:"instance_types"`
-	Projects      []string      `yaml:"projects"`
-	Exclude       []string      `yaml:"exclude"`
-	Snapshot      bool          `yaml:"snapshot_before_upgrade"`
-	SnapshotKeep  time.Duration `yaml:"snapshot_expiry"`
-	StopTimeout   time.Duration `yaml:"restart_timeout"`
+	Enabled  string   `yaml:"enabled"`
+	Socket   string   `yaml:"socket"`
+	Projects []string `yaml:"projects"`
+}
+
+// Proxmox VE settings.
+type Proxmox struct {
+	// Enabled is "auto" (use Proxmox VE when /etc/pve exists), "true" or "false".
+	Enabled string `yaml:"enabled"`
+	// Node name; defaults to the short host name.
+	Node string `yaml:"node"`
+	// How often to look for guests that were created, removed, started or stopped.
+	PollInterval time.Duration `yaml:"poll_interval"`
 }
 
 // Checks control how often state is refreshed.
@@ -108,16 +124,17 @@ type Permissions struct {
 // Default returns the configuration with all defaults applied.
 func Default() Config {
 	return Config{
-		HomeAssistant: HomeAssistant{DiscoveryPrefix: "homeassistant", BaseTopic: "incus-ha-agent"},
+		HomeAssistant: HomeAssistant{DiscoveryPrefix: "homeassistant", BaseTopic: "linux-ha-agent"},
 		Host:          Host{Manage: true},
-		Incus: Incus{
-			Enabled:       "auto",
-			InstanceTypes: []string{"container", "virtual-machine"},
-			Snapshot:      true,
-			SnapshotKeep:  7 * 24 * time.Hour,
-			StopTimeout:   2 * time.Minute,
+		Guests: Guests{
+			Types:        []string{"container", "virtual-machine"},
+			Snapshot:     true,
+			SnapshotKeep: 7 * 24 * time.Hour,
+			StopTimeout:  2 * time.Minute,
 		},
-		Checks: Checks{Interval: 6 * time.Hour, ContainerImages: true},
+		Incus:   Incus{Enabled: "auto"},
+		Proxmox: Proxmox{Enabled: "auto", PollInterval: time.Minute},
+		Checks:  Checks{Interval: 6 * time.Hour, ContainerImages: true},
 		Upgrade: Upgrade{
 			AutoUpgrade:    true,
 			RestartGuests:  true,
@@ -127,7 +144,7 @@ func Default() Config {
 		},
 		NixOS:       NixOS{GCOlderThan: "14d"},
 		Permissions: Permissions{Upgrade: true},
-		StateFile:   "/var/lib/incus-ha-agent/state.json",
+		StateFile:   "/var/lib/linux-ha-agent/state.json",
 		LogLevel:    "info",
 	}
 }
@@ -184,14 +201,20 @@ func (c *Config) Validate() error {
 	if !slices.Contains([]string{"auto", "true", "false"}, c.Incus.Enabled) {
 		errs = append(errs, fmt.Errorf("incus.enabled must be auto, true or false, not %q", c.Incus.Enabled))
 	}
-	for _, t := range c.Incus.InstanceTypes {
+	if !slices.Contains([]string{"auto", "true", "false"}, c.Proxmox.Enabled) {
+		errs = append(errs, fmt.Errorf("proxmox.enabled must be auto, true or false, not %q", c.Proxmox.Enabled))
+	}
+	if c.Proxmox.PollInterval < 10*time.Second {
+		errs = append(errs, errors.New("proxmox.poll_interval must be at least 10s"))
+	}
+	for _, t := range c.Guests.Types {
 		if t != "container" && t != "virtual-machine" {
-			errs = append(errs, fmt.Errorf("incus.instance_types: unknown type %q", t))
+			errs = append(errs, fmt.Errorf("guests.types: unknown type %q", t))
 		}
 	}
-	for _, pattern := range c.Incus.Exclude {
+	for _, pattern := range c.Guests.Exclude {
 		if _, err := path.Match(pattern, ""); err != nil {
-			errs = append(errs, fmt.Errorf("incus.exclude: bad pattern %q: %w", pattern, err))
+			errs = append(errs, fmt.Errorf("guests.exclude: bad pattern %q: %w", pattern, err))
 		}
 	}
 	if c.Checks.Interval < time.Minute {
@@ -233,10 +256,17 @@ func (m MQTT) Password() (string, error) {
 }
 
 // Excluded reports whether a guest matches one of the exclude patterns.
-// Patterns match "name" or "project/name".
-func (i Incus) Excluded(project, name string) bool {
-	for _, pattern := range i.Exclude {
-		for _, candidate := range []string{name, project + "/" + name} {
+// Patterns match the name, "project/name" (Incus) or the VMID (Proxmox).
+func (g Guests) Excluded(project, name, id string) bool {
+	candidates := []string{name}
+	if project != "" {
+		candidates = append(candidates, project+"/"+name)
+	}
+	if id != "" {
+		candidates = append(candidates, id)
+	}
+	for _, pattern := range g.Exclude {
+		for _, candidate := range candidates {
 			if ok, _ := path.Match(pattern, candidate); ok {
 				return true
 			}
@@ -245,10 +275,12 @@ func (i Incus) Excluded(project, name string) bool {
 	return false
 }
 
-// Includes reports whether a guest of this type and project is managed.
-func (i Incus) Includes(project, instanceType string) bool {
-	if !slices.Contains(i.InstanceTypes, instanceType) {
-		return false
-	}
+// Includes reports whether guests of this type are managed.
+func (g Guests) Includes(guestType string) bool {
+	return slices.Contains(g.Types, guestType)
+}
+
+// InProject reports whether an Incus project is managed.
+func (i Incus) InProject(project string) bool {
 	return len(i.Projects) == 0 || slices.Contains(i.Projects, project)
 }

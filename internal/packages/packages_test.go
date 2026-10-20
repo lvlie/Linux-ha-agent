@@ -3,11 +3,13 @@ package packages
 import (
 	"context"
 	"errors"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
-	"github.com/lvlie/incus-ha-agent/internal/osinfo"
-	"github.com/lvlie/incus-ha-agent/internal/runner"
+	"github.com/lvlie/linux-ha-agent/internal/osinfo"
+	"github.com/lvlie/linux-ha-agent/internal/runner"
 )
 
 const aptSim = `NOTE: This is only a simulation!
@@ -42,7 +44,7 @@ func TestAptCheckAndUpgrade(t *testing.T) {
 	f := (&runner.Fake{}).
 		On("apt-get -q -o DPkg::Lock::Timeout=600 update", runner.Result{}).
 		On("-s dist-upgrade", runner.Result{Stdout: aptSim}).
-		On("test -e /var/run/reboot-required", runner.Result{ExitCode: 0}).
+		On("/var/run/reboot-required", runner.Result{ExitCode: 0}).
 		On("-y -o Dpkg::Options::=--force-confdef", runner.Result{Stdout: "4 upgraded, 1 newly installed, 0 to remove and 0 not upgraded.\n"}).
 		On("autoremove --purge", runner.Result{}).
 		On(" clean", runner.Result{})
@@ -223,5 +225,42 @@ func TestSummary(t *testing.T) {
 	}
 	if got := Summary(Status{}, 2); got != "Up to date" {
 		t.Errorf("got %q", got)
+	}
+}
+
+// TestAptRebootCheckScript runs the reboot check in a fake root with sh.
+func TestAptRebootCheckScript(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no sh")
+	}
+	script := func(bootFiles []string, running string, container bool) bool {
+		dir := t.TempDir()
+		s := strings.NewReplacer(
+			"/var/run/reboot-required", dir+"/reboot-required",
+			"/run/systemd/container", dir+"/container",
+			"/proc/1/environ", dir+"/environ",
+			"/boot/vmlinuz-", dir+"/vmlinuz-",
+			"$(uname -r)", running,
+		).Replace(aptRebootCheck)
+		for _, f := range bootFiles {
+			_ = os.WriteFile(dir+"/vmlinuz-"+f, nil, 0o600)
+		}
+		if container {
+			_ = os.WriteFile(dir+"/container", []byte("lxc"), 0o600)
+		}
+		s = strings.ReplaceAll(s, "sed 's|^"+dir+"/vmlinuz-||'", "sed 's|^.*/vmlinuz-||'")
+		return exec.Command("sh", "-c", s).Run() == nil
+	}
+	if !script([]string{"6.8.12-4-pve", "6.8.12-9-pve"}, "6.8.12-4-pve", false) {
+		t.Error("newer Proxmox kernel installed: reboot required")
+	}
+	if script([]string{"6.8.12-4-pve", "6.8.12-9-pve"}, "6.8.12-9-pve", false) {
+		t.Error("running the newest kernel: no reboot")
+	}
+	if script([]string{"6.8.12-9-pve"}, "6.1.0-1-amd64", true) {
+		t.Error("containers never need a reboot for kernels")
+	}
+	if script(nil, "6.8.0-1-generic", false) {
+		t.Error("no kernels in /boot: no reboot")
 	}
 }

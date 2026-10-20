@@ -5,20 +5,22 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lvlie/incus-ha-agent/internal/containers"
-	"github.com/lvlie/incus-ha-agent/internal/ha"
-	"github.com/lvlie/incus-ha-agent/internal/incus"
-	"github.com/lvlie/incus-ha-agent/internal/packages"
-	"github.com/lvlie/incus-ha-agent/internal/runner"
+	"github.com/lvlie/linux-ha-agent/internal/containers"
+	"github.com/lvlie/linux-ha-agent/internal/guest"
+	"github.com/lvlie/linux-ha-agent/internal/ha"
+	"github.com/lvlie/linux-ha-agent/internal/packages"
+	"github.com/lvlie/linux-ha-agent/internal/runner"
 )
 
 // Device is a machine managed by the agent: the host or an Incus guest.
 type Device struct {
-	ID     string
-	Name   string
-	Host   bool
-	Guest  *incus.Guest
-	Runner runner.Runner
+	ID    string
+	Name  string
+	Host  bool
+	Guest *guest.Guest
+	// Provider manages the guest; nil for the host.
+	Provider guest.Provider
+	Runner   runner.Runner
 
 	Check     *Check
 	LastRun   *RunReport
@@ -31,25 +33,37 @@ func (d *Device) running() bool {
 	return d.Guest == nil || d.Guest.Running()
 }
 
+// manageable reports whether commands can run on the device.
+func (d *Device) manageable() bool {
+	return d.Guest == nil || d.Guest.Unmanageable == ""
+}
+
 func (d *Device) model() string {
 	switch {
 	case d.Check != nil && d.Check.OS != "":
 		if d.Guest != nil {
-			return fmt.Sprintf("%s (incus %s)", d.Check.OS, guestType(d.Guest.Type))
+			return fmt.Sprintf("%s (%s)", d.Check.OS, guestKind(*d.Guest))
 		}
 		return d.Check.OS
 	case d.Guest != nil:
-		return "Incus " + guestType(d.Guest.Type)
+		return guestKind(*d.Guest)
 	default:
 		return "Linux host"
 	}
 }
 
-func guestType(t string) string {
-	if t == "virtual-machine" {
-		return "VM"
+// guestKind describes a guest the way its platform calls it.
+func guestKind(g guest.Guest) string {
+	switch {
+	case g.Platform == "proxmox" && g.Type == guest.VirtualMachine:
+		return "Proxmox VM"
+	case g.Platform == "proxmox":
+		return "Proxmox LXC"
+	case g.Type == guest.VirtualMachine:
+		return "Incus VM"
+	default:
+		return "Incus container"
 	}
-	return "container"
 }
 
 func (d *Device) hasContainers() bool {

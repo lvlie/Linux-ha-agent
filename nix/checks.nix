@@ -13,7 +13,7 @@ let
       {
         boot.isContainer = true;
         system.stateVersion = "25.11";
-        services.incus-ha-agent = {
+        services.linux-ha-agent = {
           enable = true;
           settings = {
             mqtt.url = "tcp://mqtt.lan:1883";
@@ -23,16 +23,16 @@ let
       }
     ];
   };
-  service = machine.config.systemd.services.incus-ha-agent;
+  service = machine.config.systemd.services.linux-ha-agent;
 in
 {
   package = self.packages.${system}.default;
 
   # Evaluates the module and builds the validated config file.
-  module = pkgs.runCommand "incus-ha-agent-module-check" { } ''
+  module = pkgs.runCommand "linux-ha-agent-module-check" { } ''
     exec_start=${pkgs.lib.escapeShellArg service.serviceConfig.ExecStart}
-    echo "$exec_start" | grep -q -- '-config /nix/store/.*incus-ha-agent.yaml'
-    grep -q 'state_file: /var/lib/incus-ha-agent/state.json' ${builtins.elemAt (pkgs.lib.splitString " " service.serviceConfig.ExecStart) 2}
+    echo "$exec_start" | grep -q -- '-config /nix/store/.*linux-ha-agent.yaml'
+    grep -q 'state_file: /var/lib/linux-ha-agent/state.json' ${builtins.elemAt (pkgs.lib.splitString " " service.serviceConfig.ExecStart) 2}
     touch $out
   '';
 }

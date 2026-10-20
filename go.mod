@@ -1,4 +1,4 @@
-module github.com/lvlie/incus-ha-agent
+module github.com/lvlie/linux-ha-agent
 
 go 1.26.7
 

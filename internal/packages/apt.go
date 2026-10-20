@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/lvlie/incus-ha-agent/internal/runner"
+	"github.com/lvlie/linux-ha-agent/internal/runner"
 )
 
 // Apt manages Debian and Ubuntu.
@@ -110,9 +110,18 @@ func (a *Apt) Cleanup(ctx context.Context) error {
 	return err
 }
 
+// aptRebootCheck exits 0 when a reboot is needed: Ubuntu writes
+// /var/run/reboot-required, but Debian and Proxmox VE do not, so on machines
+// with their own kernel the newest installed kernel is compared with the
+// running one. Containers run the host's kernel and skip that comparison.
+const aptRebootCheck = `[ -e /var/run/reboot-required ] && exit 0
+if [ -e /run/systemd/container ] || grep -qa container= /proc/1/environ 2>/dev/null; then exit 1; fi
+latest=$(ls /boot/vmlinuz-* 2>/dev/null | sed 's|^/boot/vmlinuz-||' | sort -V | tail -n 1)
+[ -n "$latest" ] && [ "$latest" != "$(uname -r)" ]`
+
 // RebootRequired implements Manager.
 func (a *Apt) RebootRequired(ctx context.Context) (bool, error) {
-	res, err := a.r.Run(ctx, runner.Command("test", "-e", "/var/run/reboot-required"))
+	res, err := a.r.Run(ctx, runner.Command("sh", "-c", aptRebootCheck))
 	if err != nil {
 		return false, err
 	}

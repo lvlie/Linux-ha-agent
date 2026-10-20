@@ -5,7 +5,7 @@
 }:
 
 buildGoModule {
-  pname = "incus-ha-agent";
+  pname = "linux-ha-agent";
   inherit version;
 
   src = lib.fileset.toSource {
@@ -21,7 +21,7 @@ buildGoModule {
   # Update after changing go.mod: set to lib.fakeHash, build, copy the "got" hash.
   vendorHash = "sha256-QG3WkMq4hhoJw5DEDDMaDO/2Pur92tjBF2GJxAZ2tFo=";
 
-  subPackages = [ "cmd/incus-ha-agent" ];
+  subPackages = [ "cmd/linux-ha-agent" ];
   env.CGO_ENABLED = 0;
   ldflags = [
     "-s"
@@ -33,10 +33,10 @@ buildGoModule {
   doCheck = false;
 
   meta = {
-    description = "Home Assistant MQTT agent for Incus hosts and Linux machines";
-    homepage = "https://github.com/lvlie/incus-ha-agent";
+    description = "Home Assistant MQTT agent for Linux machines, Incus and Proxmox VE hosts";
+    homepage = "https://github.com/lvlie/linux-ha-agent";
     license = lib.licenses.gpl3Plus;
-    mainProgram = "incus-ha-agent";
+    mainProgram = "linux-ha-agent";
     platforms = lib.platforms.linux;
   };
 }

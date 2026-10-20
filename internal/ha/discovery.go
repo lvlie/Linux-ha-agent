@@ -257,14 +257,14 @@ func Payload(t Topics, o Origin, d Device, f Features) ([]byte, error) {
 	}
 
 	dev := map[string]any{
-		"ids":  []string{"incus_ha_agent_" + d.ID},
+		"ids":  []string{"linux_ha_agent_" + d.ID},
 		"name": d.Name,
 		"mf":   o.Name,
 		"mdl":  d.Model,
 		"sw":   o.Version,
 	}
 	if d.ViaDevice != "" {
-		dev["via_device"] = "incus_ha_agent_" + d.ViaDevice
+		dev["via_device"] = "linux_ha_agent_" + d.ViaDevice
 	}
 	payload := map[string]any{
 		"dev":  dev,

@@ -15,7 +15,7 @@ import (
 	"github.com/mochi-mqtt/server/v2/hooks/auth"
 	"github.com/mochi-mqtt/server/v2/listeners"
 
-	"github.com/lvlie/incus-ha-agent/internal/config"
+	"github.com/lvlie/linux-ha-agent/internal/config"
 )
 
 func TestMatch(t *testing.T) {

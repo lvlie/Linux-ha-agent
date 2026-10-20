@@ -2,10 +2,10 @@
 mqtt:
   url: tcp://127.0.0.1:1883
   username: e2e_host
-  password_file: /etc/incus-ha-agent/mqtt-password
+  password_file: /etc/linux-ha-agent/mqtt-password
 host:
   name: e2e-host
-incus:
+guests:
   snapshot_expiry: 1h
 checks:
   interval: 1h

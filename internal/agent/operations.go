@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/lvlie/incus-ha-agent/internal/containers"
-	"github.com/lvlie/incus-ha-agent/internal/ha"
-	"github.com/lvlie/incus-ha-agent/internal/osinfo"
-	"github.com/lvlie/incus-ha-agent/internal/packages"
+	"github.com/lvlie/linux-ha-agent/internal/containers"
+	"github.com/lvlie/linux-ha-agent/internal/ha"
+	"github.com/lvlie/linux-ha-agent/internal/osinfo"
+	"github.com/lvlie/linux-ha-agent/internal/packages"
 )
 
 // SnapshotPrefix marks snapshots taken by the agent before upgrades.
@@ -35,6 +35,13 @@ func (a *Agent) packageManager(ctx context.Context, d *Device) (packages.Manager
 // check inspects a device and publishes the result.
 func (a *Agent) check(ctx context.Context, d *Device) {
 	if !d.running() || !a.managesPackages(d) {
+		a.publish(d, false)
+		return
+	}
+	if !d.manageable() {
+		a.mu.Lock()
+		d.Check = &Check{Time: a.now(), Error: d.Guest.Unmanageable}
+		a.mu.Unlock()
 		a.publish(d, false)
 		return
 	}
@@ -141,12 +148,16 @@ func (a *Agent) upgrade(ctx context.Context, d *Device, action, trigger string) 
 		report.step("start", false, errors.New("the host is not managed (host.manage is false)"), "")
 		return false
 	}
+	if !d.manageable() {
+		report.step("start", false, errors.New(d.Guest.Unmanageable), "")
+		return false
+	}
 	opCtx, cancel := a.withTimeout(ctx)
 	defer cancel()
 
-	if d.Guest != nil && a.incus != nil && a.cfg.Incus.Snapshot {
+	if d.Guest != nil && a.cfg.Guests.Snapshot {
 		name := SnapshotPrefix + a.now().UTC().Format("20060102-150405")
-		err := a.incus.CreateSnapshot(opCtx, *d.Guest, name, a.now().Add(a.cfg.Incus.SnapshotKeep))
+		err := d.Provider.CreateSnapshot(opCtx, *d.Guest, name, a.now().Add(a.cfg.Guests.SnapshotKeep))
 		if !report.step("snapshot", false, err, name) {
 			return false // never upgrade without the safety net
 		}
@@ -189,11 +200,11 @@ func (a *Agent) upgrade(ctx context.Context, d *Device, action, trigger string) 
 		report.step("reboot", false, nil, "reboot required")
 		return true
 	}
-	if !a.cfg.Upgrade.RestartGuests || a.incus == nil {
+	if !a.cfg.Upgrade.RestartGuests {
 		report.step("restart", false, nil, "restart required; automatic restarts are off")
 		return false
 	}
-	report.step("restart", true, a.incus.Restart(opCtx, *d.Guest, a.cfg.Incus.StopTimeout), "restarted because a reboot was required")
+	report.step("restart", true, d.Provider.Restart(opCtx, *d.Guest, a.cfg.Guests.StopTimeout), "restarted because a reboot was required")
 	return false
 }
 
@@ -263,7 +274,7 @@ func (a *Agent) restartGuest(ctx context.Context, d *Device, trigger string) {
 	a.setOperation(d, "restarting")
 	ctx, cancel := a.withTimeout(ctx)
 	defer cancel()
-	report.step("restart", true, a.incus.Restart(ctx, *d.Guest, a.cfg.Incus.StopTimeout), "")
+	report.step("restart", true, d.Provider.Restart(ctx, *d.Guest, a.cfg.Guests.StopTimeout), "")
 	a.finish(ctx, d, report)
 }
 
@@ -272,7 +283,7 @@ func (a *Agent) restore(ctx context.Context, d *Device, trigger string) {
 	a.setOperation(d, "restoring")
 	ctx, cancel := a.withTimeout(ctx)
 	defer cancel()
-	snaps, err := a.incus.Snapshots(ctx, *d.Guest)
+	snaps, err := d.Provider.Snapshots(ctx, *d.Guest)
 	name := ""
 	for _, s := range snaps {
 		if strings.HasPrefix(s.Name, SnapshotPrefix) {
@@ -286,7 +297,7 @@ func (a *Agent) restore(ctx context.Context, d *Device, trigger string) {
 	case name == "":
 		report.step("restore", false, errors.New("no pre-upgrade snapshot found"), "")
 	default:
-		report.step("restore", true, a.incus.RestoreSnapshot(ctx, *d.Guest, name), name)
+		report.step("restore", true, d.Provider.RestoreSnapshot(ctx, *d.Guest, name), name)
 	}
 	a.finish(ctx, d, report)
 }
@@ -303,7 +314,7 @@ func (a *Agent) finish(ctx context.Context, d *Device, report *RunReport) {
 	a.mu.Unlock()
 	a.saveState()
 	a.log.Info(report.Action+" finished", "device", d.ID, "success", report.Success)
-	// The guest's status changed; Incus events trigger a sync, and the
+	// The guest's status changed; platform events trigger a sync, and the
 	// check below refreshes everything else.
 	a.check(ctx, d)
 }
