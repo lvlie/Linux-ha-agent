@@ -183,7 +183,7 @@ func TestUpgradeProject(t *testing.T) {
 	if err != nil || !changed {
 		t.Fatalf("expected change, got %v %v", changed, err)
 	}
-	want := "docker compose -p app --project-directory /root/app -f /root/app/compose.yaml pull --quiet"
+	want := `sh -c cd "$1" && shift && exec "$@" sh /root/app docker compose -p app -f /root/app/compose.yaml pull --quiet`
 	if !f.Ran(want) {
 		t.Fatalf("missing %q in %v", want, f.Calls)
 	}
@@ -193,12 +193,45 @@ func TestUpgradeProject(t *testing.T) {
 	}
 }
 
-func TestPodmanComposeFallback(t *testing.T) {
+func TestPodmanCompose(t *testing.T) {
 	f := (&runner.Fake{}).
 		On("podman compose version", runner.Result{ExitCode: 125}).
 		On("command -v \"$1\" >/dev/null 2>&1 sh podman-compose", runner.Result{})
-	if got := NewEngine("podman", f).compose(context.Background()); strings.Join(got, " ") != "podman-compose" {
-		t.Fatalf("got %v", got)
+	tool := NewEngine("podman", f).compose(context.Background())
+	if strings.Join(tool.base, " ") != "podman-compose" || !tool.podmanCompose {
+		t.Fatalf("got %+v", tool)
+	}
+	// podman-compose stores relative file names and has no --quiet.
+	p := Project{Name: "app", WorkingDir: "/root/app", ConfigFiles: []string{"compose.yaml"}}
+	pull := tool.pull(p, "web").String()
+	if pull != `sh -c cd "$1" && shift && exec "$@" sh /root/app podman-compose -p app -f compose.yaml pull web` {
+		t.Errorf("pull: %s", pull)
+	}
+	if up := tool.up(p, "web").String(); !strings.HasSuffix(up, "up -d --no-deps web") {
+		t.Errorf("up: %s", up)
+	}
+
+	wrapped := (&runner.Fake{}).On("podman compose version", runner.Result{Stdout: ">>>> Executing external compose provider \"/usr/bin/podman-compose\"\npodman-compose version 1.5.0\n"})
+	if tool := NewEngine("podman", wrapped).compose(context.Background()); !tool.podmanCompose || tool.base[0] != "podman" {
+		t.Errorf("podman compose wrapping podman-compose: %+v", tool)
+	}
+}
+
+func TestUpgradeServiceAndRestart(t *testing.T) {
+	f := (&runner.Fake{}).
+		On("docker ps -a -q --no-trunc", runner.Result{}).
+		On("pull --quiet web", runner.Result{}).
+		On("up -d --no-deps web", runner.Result{}).
+		On("docker restart abc", runner.Result{})
+	e := NewEngine("docker", f)
+	if _, err := e.UpgradeService(context.Background(), Project{Name: "app"}, "web"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Restart(context.Background(), "abc"); err != nil {
+		t.Fatal(err)
+	}
+	if !f.Ran("docker compose -p app pull --quiet web") || !f.Ran("docker restart abc") {
+		t.Fatalf("calls: %v", f.Calls)
 	}
 }
 

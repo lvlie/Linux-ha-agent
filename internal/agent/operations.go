@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/lvlie/linux-ha-agent/internal/containers"
 	"github.com/lvlie/linux-ha-agent/internal/ha"
 	"github.com/lvlie/linux-ha-agent/internal/osinfo"
 	"github.com/lvlie/linux-ha-agent/internal/packages"
+	"github.com/lvlie/linux-ha-agent/internal/sysinfo"
 )
 
 // SnapshotPrefix marks snapshots taken by the agent before upgrades.
@@ -80,6 +82,9 @@ func (a *Agent) check(ctx context.Context, d *Device) {
 			errs = append(errs, e.Name+": "+err.Error())
 			continue
 		}
+		for i := range cs {
+			cs[i].Engine = e.Name
+		}
 		c.Containers = append(c.Containers, cs...)
 		c.Projects = append(c.Projects, containers.Projects(cs)...)
 		if !a.cfg.Checks.ContainerImages || a.registry == nil || len(cs) == 0 {
@@ -102,9 +107,14 @@ func (a *Agent) check(ctx context.Context, d *Device) {
 			local[k] = v
 		}
 	}
+	c.LocalDigests = local
 	if a.cfg.Checks.ContainerImages && a.registry != nil && len(c.Containers) > 0 {
 		c.Images = containers.CheckImages(ctx, c.Containers, local, a.registry)
 		c.ImagesChecked = true
+	}
+	stats, err := sysinfo.Collect(ctx, d.Runner, d.sharedKernel())
+	if err != nil {
+		errs = append(errs, "system info: "+err.Error())
 	}
 	c.Error = strings.Join(errs, "; ")
 	if c.Error != "" {
@@ -113,9 +123,78 @@ func (a *Agent) check(ctx context.Context, d *Device) {
 
 	a.mu.Lock()
 	d.Check = c
+	if err == nil {
+		d.Stats, d.StatsTime = &stats, a.now()
+	}
 	d.Operation = ""
 	a.mu.Unlock()
 	a.publish(d, false)
+}
+
+// refreshStats updates CPU, memory, disk, load and kernel information.
+func (a *Agent) refreshStats(ctx context.Context, d *Device) {
+	if !d.running() || !d.manageable() || !a.managesPackages(d) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	stats, err := sysinfo.Collect(ctx, d.Runner, d.sharedKernel())
+	if err != nil {
+		a.log.Debug("collecting system info failed", "device", d.ID, "err", err)
+		return
+	}
+	a.mu.Lock()
+	d.Stats, d.StatsTime = &stats, a.now()
+	a.mu.Unlock()
+}
+
+// upgradeContainer updates one container: its compose service, or podman
+// auto-update for containers labelled for it.
+func (a *Agent) upgradeContainer(ctx context.Context, d *Device, key, trigger string) {
+	report := &RunReport{Trigger: trigger, Action: ha.CmdUpgradeContainer + " " + key, Started: a.now()}
+	a.mu.Lock()
+	c, ok := d.container(key)
+	a.mu.Unlock()
+	a.setOperation(d, ha.CmdUpgradeContainer)
+	ctx, cancel := a.withTimeout(ctx)
+	defer cancel()
+	e := containers.NewEngine(c.Engine, d.Runner)
+	switch {
+	case !ok:
+		report.step("container", false, fmt.Errorf("container %s is gone", key), "")
+	case c.Project != "":
+		p := containers.Project{Name: c.Project, WorkingDir: c.WorkingDir, ConfigFiles: c.ConfigFiles}
+		var changed bool
+		var err error
+		if c.Service == "" {
+			changed, err = e.UpgradeProject(ctx, p) // older compose without service labels
+		} else {
+			changed, err = e.UpgradeService(ctx, p, c.Service)
+		}
+		report.step(fmt.Sprintf("%s compose %s/%s", c.Engine, c.Project, c.Service), changed, err, c.Image)
+	case c.AutoUpdate:
+		changed, err := e.AutoUpdate(ctx)
+		report.step("podman auto-update", changed, err, c.Image)
+	default:
+		report.step("container", false, fmt.Errorf("container %s is not managed by compose or podman auto-update", c.Name), "")
+	}
+	a.finish(ctx, d, report)
+}
+
+func (a *Agent) restartContainer(ctx context.Context, d *Device, key, trigger string) {
+	report := &RunReport{Trigger: trigger, Action: ha.CmdRestartContainer + " " + key, Started: a.now()}
+	a.mu.Lock()
+	c, ok := d.container(key)
+	a.mu.Unlock()
+	a.setOperation(d, ha.CmdRestartContainer)
+	ctx, cancel := a.withTimeout(ctx)
+	defer cancel()
+	if !ok {
+		report.step("restart", false, fmt.Errorf("container %s is gone", key), "")
+	} else {
+		report.step("restart "+c.Name, true, containers.NewEngine(c.Engine, d.Runner).Restart(ctx, c.ID), "")
+	}
+	a.finish(ctx, d, report)
 }
 
 // upgrade upgrades one device and reports whether it needs a reboot that was

@@ -19,6 +19,7 @@ const (
 	labelProject     = "com.docker.compose.project"
 	labelWorkingDir  = "com.docker.compose.project.working_dir"
 	labelConfigFiles = "com.docker.compose.project.config_files"
+	labelService     = "com.docker.compose.service"
 	labelAutoUpdate  = "io.containers.autoupdate"
 )
 
@@ -53,12 +54,15 @@ func NewEngine(name string, r runner.Runner) *Engine {
 
 // Container is a container with the details the agent needs.
 type Container struct {
+	// Engine is "docker" or "podman" (set by the caller that listed it).
+	Engine      string
 	ID          string
 	Name        string
 	Image       string
 	ImageID     string
 	State       string
 	Project     string
+	Service     string
 	WorkingDir  string
 	ConfigFiles []string
 	AutoUpdate  bool
@@ -122,6 +126,7 @@ func ParseInspect(out string) ([]Container, error) {
 			ImageID:     normalizeID(c.Image),
 			State:       strings.ToLower(c.State.Status),
 			Project:     labels[labelProject],
+			Service:     labels[labelService],
 			WorkingDir:  labels[labelWorkingDir],
 			ConfigFiles: files,
 			AutoUpdate:  autoUpdate == "registry" || autoUpdate == "local",
@@ -200,40 +205,79 @@ func ParseImageInspect(out string) (map[string][]string, error) {
 	return digests, nil
 }
 
-func (e *Engine) compose(ctx context.Context) []string {
+// composeTool is the compose implementation of an engine.
+type composeTool struct {
+	base []string
+	// podmanCompose is the Python podman-compose, which has fewer options.
+	podmanCompose bool
+}
+
+func (e *Engine) compose(ctx context.Context) composeTool {
 	if e.Name == "podman" {
 		res, err := e.r.Run(ctx, runner.Command("podman", "compose", "version"))
 		if (err != nil || res.ExitCode != 0) && runner.Has(ctx, e.r, "podman-compose") {
-			return []string{"podman-compose"}
+			return composeTool{base: []string{"podman-compose"}, podmanCompose: true}
 		}
+		// `podman compose` may itself delegate to podman-compose.
+		return composeTool{base: []string{"podman", "compose"}, podmanCompose: strings.Contains(res.Stdout+res.Stderr, "podman-compose")}
 	}
-	return []string{e.Name, "compose"}
+	return composeTool{base: []string{e.Name, "compose"}}
 }
 
-func composeArgs(base []string, p Project, args ...string) []string {
-	out := append([]string(nil), base...)
-	out = append(out, "-p", p.Name)
-	if p.WorkingDir != "" {
-		out = append(out, "--project-directory", p.WorkingDir)
-	}
+// command runs compose from the project's directory, so relative file names
+// in the compose labels (podman-compose stores them that way) resolve.
+func (c composeTool) command(p Project, args ...string) runner.Cmd {
+	cmd := append([]string(nil), c.base...)
+	cmd = append(cmd, "-p", p.Name)
 	for _, f := range p.ConfigFiles {
-		out = append(out, "-f", f)
+		cmd = append(cmd, "-f", f)
 	}
-	return append(out, args...)
+	cmd = append(cmd, args...)
+	if p.WorkingDir == "" {
+		return runner.Command(cmd...)
+	}
+	return runner.Command(append([]string{"sh", "-c", `cd "$1" && shift && exec "$@"`, "sh", p.WorkingDir}, cmd...)...)
+}
+
+func (c composeTool) pull(p Project, services ...string) runner.Cmd {
+	args := []string{"pull"}
+	if !c.podmanCompose {
+		args = append(args, "--quiet")
+	}
+	return c.command(p, append(args, services...)...)
+}
+
+func (c composeTool) up(p Project, services ...string) runner.Cmd {
+	args := []string{"up", "-d"}
+	if len(services) == 0 {
+		args = append(args, "--remove-orphans")
+	} else {
+		args = append(args, "--no-deps")
+	}
+	return c.command(p, append(args, services...)...)
 }
 
 // UpgradeProject pulls newer images for a compose project and recreates the
 // containers whose image changed. It reports whether anything changed.
 func (e *Engine) UpgradeProject(ctx context.Context, p Project) (bool, error) {
+	return e.upgradeCompose(ctx, p)
+}
+
+// UpgradeService does the same for one service of a project.
+func (e *Engine) UpgradeService(ctx context.Context, p Project, service string) (bool, error) {
+	return e.upgradeCompose(ctx, p, service)
+}
+
+func (e *Engine) upgradeCompose(ctx context.Context, p Project, services ...string) (bool, error) {
 	before, err := e.projectImages(ctx, p.Name)
 	if err != nil {
 		return false, err
 	}
-	base := e.compose(ctx)
-	if _, err := runner.Check(ctx, e.r, runner.Command(composeArgs(base, p, "pull", "--quiet")...)); err != nil {
+	tool := e.compose(ctx)
+	if _, err := runner.Check(ctx, e.r, tool.pull(p, services...)); err != nil {
 		return false, err
 	}
-	if _, err := runner.Check(ctx, e.r, runner.Command(composeArgs(base, p, "up", "-d", "--remove-orphans")...)); err != nil {
+	if _, err := runner.Check(ctx, e.r, tool.up(p, services...)); err != nil {
 		return false, err
 	}
 	after, err := e.projectImages(ctx, p.Name)
@@ -241,6 +285,12 @@ func (e *Engine) UpgradeProject(ctx context.Context, p Project) (bool, error) {
 		return false, err
 	}
 	return !maps.Equal(before, after), nil
+}
+
+// Restart restarts one container.
+func (e *Engine) Restart(ctx context.Context, id string) error {
+	_, err := runner.Check(ctx, e.r, runner.Command(e.Name, "restart", id))
+	return err
 }
 
 func (e *Engine) projectImages(ctx context.Context, project string) (map[string]string, error) {

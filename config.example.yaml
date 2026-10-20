@@ -58,6 +58,11 @@ checks:
   interval: 6h
   # Compare container images with their registries (HEAD requests only).
   container_images: true
+  # How often CPU, memory, disk, load, uptime and kernel are refreshed
+  # (0: only with the update checks).
+  stats_interval: 5m
+  # Entities for every docker/podman container (running, image update, restart).
+  container_entities: true
 
 upgrade:
   # Cron schedule for upgrading the host and all guests, e.g. Sundays 03:30.
@@ -85,9 +90,14 @@ nixos:
 
 # What Home Assistant (and so anyone who can use it) may trigger.
 permissions:
+  # Upgrade packages, containers and single containers.
   upgrade: true
+  # Reboot the host, restart guests.
   reboot: false
+  # Restore a guest to its pre-upgrade snapshot.
   restore: false
+  # Restart single docker/podman containers.
+  restart_containers: false
 
 state_file: /var/lib/linux-ha-agent/state.json
 log_level: info

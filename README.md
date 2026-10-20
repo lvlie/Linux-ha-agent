@@ -22,25 +22,87 @@ Proxmox node:  linux-ha-agent ── pct exec / QEMU guest agent, pvesh ──�
 Other machines: linux-ha-agent (manages only itself)
 ```
 
+## Quick start
+
+1. **Install the package** on every Linux machine (on Incus and Proxmox VE
+   hosts only on the host, not in the guests):
+
+   ```sh
+   # Debian, Ubuntu, Proxmox VE
+   sudo apt install ./linux-ha-agent_<version>-1_amd64.deb
+   # Fedora, RHEL, Rocky, Alma
+   sudo dnf install ./linux-ha-agent-<version>-1.x86_64.rpm
+   # anything else, with Go
+   go install github.com/lvlie/linux-ha-agent/cmd/linux-ha-agent@latest
+   ```
+
+   Packages are on the [releases page](https://github.com/lvlie/linux-ha-agent/releases);
+   see [docs/installation.md](docs/installation.md) for the install script,
+   NixOS and details.
+
+2. **Prepare Home Assistant**: install the *Mosquitto broker* add-on, accept
+   the MQTT integration it offers, and create a user for the machine named
+   after its host ID (its host name, lowercase, `-` and `.` become `_`).
+
+3. **Configure the agent** in `/etc/linux-ha-agent/config.yaml`:
+
+   ```yaml
+   mqtt:
+     url: tcp://homeassistant.local:1883
+     username: pve_01      # the host ID
+     password_file: /etc/linux-ha-agent/mqtt-password
+   ```
+
+4. **Start it**:
+
+   ```sh
+   echo 'the-password' | sudo tee /etc/linux-ha-agent/mqtt-password >/dev/null
+   sudo chmod 600 /etc/linux-ha-agent/mqtt-password
+   sudo systemctl enable --now linux-ha-agent
+   ```
+
+5. The machine, its guests and containers appear under **Settings → Devices
+   & services → MQTT**, and pending updates under **Settings → Updates**.
+
+Then lock down the broker with the per-host access list, add a dashboard and
+automations: [docs/home-assistant.md](docs/home-assistant.md).
+
 ## What you get in Home Assistant
 
-Every machine and every guest becomes a device. Guests are linked to their
-host (`via_device`).
+Every machine and every guest becomes a device; guests are linked to their
+host. The full list is in [docs/entities.md](docs/entities.md).
 
-| Entity | |
-| --- | --- |
-| **System updates** (update entity) | Pending packages; *Install* upgrades them. Shows up under Settings → Updates |
-| **Container images** (update entity) | Images with a newer version in their registry; *Install* pulls them and recreates the compose projects |
-| Pending updates / Security updates | Counts, with the package list as attributes |
-| Reboot required | From `/var/run/reboot-required`, `dnf needs-restarting` or the NixOS booted system |
-| Containers running / Container image updates | Per engine, with compose projects as attributes |
-| Upgrade running, Last upgrade, Last upgrade result | Result has every step as attributes |
-| Buttons | Check for updates, Upgrade, Reboot/Restart, Restore pre-upgrade snapshot (guests) |
-| Host only | Upgrade host and guests, Automatic upgrades switch, Next scheduled upgrade, Managed guests |
+- **Updates**: pending and security updates with an *Install* action (update
+  entities, shown under Settings → Updates), an *Updates available* sensor,
+  and totals over the host and all guests.
+- **Reboots and kernels**: *Reboot required*, running and newest installed
+  kernel, *Kernel update pending*, last boot.
+- **System**: CPU, memory, disk, load and temperature, like LNXlink.
+- **Guests** (Incus, Proxmox VE): running state, platform, and per guest all
+  of the above; on the host the number of guests running, with updates and
+  needing a reboot.
+- **Containers** (Docker, Podman, on hosts and in guests): per container a
+  running sensor, an update entity that pulls the newer image and recreates
+  just that container, and a restart button; per machine the number of
+  running containers and of newer images.
+- **Actions**: check, upgrade (packages, containers, single containers, or
+  the host and all guests), reboot or restart, restore the pre-upgrade
+  snapshot, and an automatic upgrade schedule with an on/off switch.
+- **Cleanup**: guests and containers that are removed disappear from Home
+  Assistant with their entities.
 
-Everything is exposed to Assist and so to the Home Assistant MCP server, so
-Claude or any other assistant can answer "what needs updating?" or press
-*Upgrade* with your approval.
+### Compared with LNXlink
+
+| | LNXlink | linux-ha-agent |
+| --- | --- | --- |
+| Language, install | Python, pip | Go, one static binary; .deb, .rpm, `go install`, NixOS |
+| System sensors (CPU, memory, disk, load, temperature, uptime) | yes | yes |
+| Package updates | count | count, security, list, install, reboot and kernel status |
+| Docker | containers, start/stop | Docker and Podman, image updates, update and restart per container |
+| Incus / Proxmox guests | no | yes, through the platform API; nothing installed in guests |
+| Snapshots before upgrades, restore | no | yes |
+| Desktop features (media, notifications, screenshots, ...) | yes | no, it is meant for servers |
+| Arbitrary commands from Home Assistant | yes | no, by design |
 
 ## Supported systems
 
@@ -108,125 +170,10 @@ the guest list current and trigger a check when a guest starts.
   `guests.snapshot_before_upgrade: false` for those guests' hosts if you
   accept upgrading without one.
 
-## Install
-
-Every [release](https://github.com/lvlie/linux-ha-agent/releases) has `.deb`
-and `.rpm` packages and plain binaries for amd64 and arm64, with SHA-256
-checksums and signed build provenance. The binary is static: it runs on any
-Linux distribution without dependencies.
-
-### Debian, Ubuntu, Proxmox VE (.deb)
-
-```sh
-curl -fsSLO https://github.com/lvlie/linux-ha-agent/releases/download/v0.1.0/linux-ha-agent_0.1.0-1_amd64.deb
-sudo apt install ./linux-ha-agent_0.1.0-1_amd64.deb
-```
-
-### Fedora, RHEL, Rocky, Alma (.rpm)
-
-```sh
-sudo dnf install https://github.com/lvlie/linux-ha-agent/releases/download/v0.1.0/linux-ha-agent-0.1.0-1.x86_64.rpm
-```
-
-The packages install:
-
-| | |
-| --- | --- |
-| `/usr/bin/linux-ha-agent` | the agent |
-| `/etc/linux-ha-agent/config.yaml` | configuration (kept on upgrades and removal) |
-| `/usr/lib/systemd/system/linux-ha-agent.service` | systemd unit, not started until you enable it |
-| `/usr/share/doc/linux-ha-agent/` | README, example configuration, Mosquitto ACL |
-
-Upgrading the package restarts a running agent. Removing it stops the
-service; `apt purge` also removes the configuration.
-
-### Install script
-
-Picks the right package (or the plain binary on other distributions) for
-the latest or a given release and verifies it:
-
-```sh
-curl -fsSLO https://github.com/lvlie/linux-ha-agent/releases/latest/download/install.sh
-less install.sh        # read it first
-sudo sh install.sh     # or: sudo sh install.sh v0.1.0
-```
-
-### With Go
-
-With Go installed (1.26.7 or newer; older Go versions download it
-automatically):
-
-```sh
-go install github.com/lvlie/linux-ha-agent/cmd/linux-ha-agent@latest
-sudo install -m 0755 "$(go env GOPATH)/bin/linux-ha-agent" /usr/local/bin/
-```
-
-Then add the [systemd unit](packaging/systemd/linux-ha-agent.service) (change
-`/usr/bin` to `/usr/local/bin`) and a configuration.
-
-### After installing
-
-```sh
-sudoedit /etc/linux-ha-agent/config.yaml
-echo 'the-mqtt-password' | sudo tee /etc/linux-ha-agent/mqtt-password >/dev/null
-sudo chmod 600 /etc/linux-ha-agent/mqtt-password
-sudo systemctl enable --now linux-ha-agent
-journalctl -u linux-ha-agent -f
-```
-
-Try it without MQTT: `sudo linux-ha-agent -config /etc/linux-ha-agent/config.yaml -once`
-checks everything once and prints the state as JSON.
-
-### NixOS
-
-```nix
-{
-  inputs.linux-ha-agent.url = "github:lvlie/linux-ha-agent";
-
-  outputs = { nixpkgs, linux-ha-agent, ... }: {
-    nixosConfigurations.myhost = nixpkgs.lib.nixosSystem {
-      modules = [
-        linux-ha-agent.nixosModules.default
-        {
-          services.linux-ha-agent = {
-            enable = true;
-            settings = {
-              mqtt = {
-                url = "ssl://mqtt.lan:8883";
-                username = "myhost";
-                password_file = "/run/secrets/linux-ha-agent-mqtt"; # sops-nix, agenix, ...
-              };
-              upgrade.schedule = "30 3 * * 0";
-              nixos.flake = "github:me/nix-config"; # or leave empty for channels
-            };
-          };
-        }
-      ];
-    };
-  };
-}
-```
-
-The configuration is validated when the system is built.
-
 ## Configuration
 
-See [`config.example.yaml`](config.example.yaml); only `mqtt.url` is required.
-Unknown keys are rejected so typos do not go unnoticed. Validate with
-`linux-ha-agent -check-config`.
-
-The most important settings:
-
-| Setting | Default | |
-| --- | --- | --- |
-| `upgrade.schedule` | off | Cron schedule for *Upgrade host and guests*, e.g. `30 3 * * 0`; prefix `CRON_TZ=Europe/Amsterdam` for a time zone |
-| `upgrade.reboot_host` | `false` | Reboot the host when needed after an upgrade |
-| `upgrade.restart_guests` | `true` | Restart guests when needed after an upgrade |
-| `guests.snapshot_before_upgrade` | `true` | Snapshot guests before upgrading |
-| `guests.exclude` | none | Guests to leave alone: `name`, `project/name` (Incus), VMID (Proxmox), wildcards |
-| `incus.enabled` / `proxmox.enabled` | `auto` | Manage Incus or Proxmox VE guests when found |
-| `permissions.upgrade` / `reboot` / `restore` | `true` / `false` / `false` | What Home Assistant may trigger |
-| `checks.interval` | `6h` | How often to look for updates |
+See [`config.example.yaml`](config.example.yaml) and
+[docs/installation.md](docs/installation.md#configuration).
 
 ## Security
 

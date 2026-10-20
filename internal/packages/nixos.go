@@ -19,6 +19,13 @@ type NixOS struct {
 // Name implements Manager.
 func (*NixOS) Name() string { return "nixos" }
 
+// nixCommand runs a nix tool with the system environment (NIX_PATH and
+// friends from /etc/set-environment), which commands started by the agent or
+// through `incus exec`/`pct exec` do not get from a login shell.
+func nixCommand(args ...string) runner.Cmd {
+	return runner.Command(append([]string{"sh", "-c", `. /etc/set-environment 2>/dev/null; exec "$@"`, "sh"}, args...)...)
+}
+
 func (n *NixOS) rebuildArgs(ctx context.Context, action string) ([]string, error) {
 	args := []string{"nixos-rebuild", action}
 	if n.flake == "" {
@@ -42,7 +49,7 @@ func (n *NixOS) Check(ctx context.Context) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	res, err := runner.Check(ctx, n.r, runner.Command(args...))
+	res, err := runner.Check(ctx, n.r, nixCommand(args...))
 	if err != nil {
 		return Status{}, err
 	}
@@ -87,7 +94,7 @@ func (n *NixOS) Upgrade(ctx context.Context) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	if _, err := runner.Check(ctx, n.r, runner.Command(args...)); err != nil {
+	if _, err := runner.Check(ctx, n.r, nixCommand(args...)); err != nil {
 		return Result{}, err
 	}
 	after := n.currentSystem(ctx)
@@ -111,7 +118,7 @@ func (n *NixOS) Cleanup(ctx context.Context) error {
 	if n.gcOlderThan != "" {
 		args = append(args, "--delete-older-than", n.gcOlderThan)
 	}
-	_, err := runner.Check(ctx, n.r, runner.Command(args...))
+	_, err := runner.Check(ctx, n.r, nixCommand(args...))
 	return err
 }
 

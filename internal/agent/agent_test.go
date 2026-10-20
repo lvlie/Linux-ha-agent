@@ -33,6 +33,7 @@ type machine struct {
 	upgraded           bool
 	imagesUpgraded     bool
 	pruned             bool
+	containerRemoved   bool
 	rebootedAfter      func() bool
 	packageUpgradeRuns int
 }
@@ -74,7 +75,13 @@ func (m *machine) docker(f *runner.Fake) {
 	f.On(`sh docker`, runner.Result{}).
 		On("docker version --format", runner.Result{Stdout: "27.5.1\n"}).
 		On("docker --version", runner.Result{Stdout: "Docker version 27.5.1\n"}).
-		On("docker ps -a -q --no-trunc", runner.Result{Stdout: "c1\n"}).
+		OnFunc("docker ps -a -q --no-trunc", func(runner.Cmd) runner.Result {
+			defer m.lock()()
+			if m.containerRemoved {
+				return runner.Result{}
+			}
+			return runner.Result{Stdout: "c1\n"}
+		}).
 		OnFunc("docker container inspect c1", func(runner.Cmd) runner.Result {
 			defer m.lock()()
 			id := "sha256:old"
@@ -84,7 +91,8 @@ func (m *machine) docker(f *runner.Fake) {
 			return runner.Result{Stdout: fmt.Sprintf(`[{"Id":"c1","Name":"/app-web-1","Image":%q,
 				"Config":{"Image":"nginx:1.27","Labels":{"com.docker.compose.project":"app",
 				"com.docker.compose.project.working_dir":"/root/app",
-				"com.docker.compose.project.config_files":"/root/app/compose.yaml"}},
+				"com.docker.compose.project.config_files":"/root/app/compose.yaml",
+				"com.docker.compose.service":"web"}},
 				"State":{"Status":"running"}}]`, id)}
 		}).
 		OnFunc("docker image inspect", func(c runner.Cmd) runner.Result {
@@ -96,7 +104,7 @@ func (m *machine) docker(f *runner.Fake) {
 			return runner.Result{Stdout: fmt.Sprintf(`[{"Id":%q,"RepoDigests":["nginx@%s"]}]`, id, digest)}
 		}).
 		On("pull --quiet", runner.Result{}).
-		OnFunc("up -d --remove-orphans", func(runner.Cmd) runner.Result {
+		OnFunc("compose -p app -f /root/app/compose.yaml up -d", func(runner.Cmd) runner.Result {
 			defer m.lock()()
 			m.imagesUpgraded = true
 			return runner.Result{}
@@ -134,6 +142,13 @@ func (m *machine) fedora(f *runner.Fake) {
 
 var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))
 
+// stats answers the system info script of a simulated machine.
+func stats(f *runner.Fake, kernel, latest string) *runner.Fake {
+	return f.On("kernel=$(uname -r)", runner.Result{Stdout: "kernel=" + kernel + "\narch=x86_64\nlatest_kernel=" + latest +
+		"\nuptime=3600.5\nload=0.10 0.20 0.30\ncpus=2\nmem_total=4000000\nmem_available=1000000\n" +
+		"disk_total=1000000\ndisk_used=500000\ncpu=100 50 200 100\ntemp=\n"})
+}
+
 type registry map[string]string
 
 func (r registry) Digest(_ context.Context, ref string) (string, error) {
@@ -158,6 +173,12 @@ type env struct {
 
 func newEnv(t *testing.T, mutate func(*config.Config)) *env {
 	t.Helper()
+	return newEnvWith(t, mutate, nil)
+}
+
+// newEnvWith lets a test add fake rules before the defaults (first match wins).
+func newEnvWith(t *testing.T, mutate func(*config.Config), before func(*env)) *env {
+	t.Helper()
 	cfg := config.Default()
 	cfg.MQTT.URL = "tcp://broker:1883"
 	cfg.StateFile = filepath.Join(t.TempDir(), "state.json")
@@ -174,8 +195,15 @@ func newEnv(t *testing.T, mutate func(*config.Config)) *env {
 		guest.Guest{Name: "old", Project: "default", Type: "container", Status: "Stopped"},
 		guest.Guest{Name: "build-1", Project: "default", Type: "container", Status: "Running"},
 	)
+	if before != nil {
+		before(e)
+	}
+	stats(e.host, "6.8.0-45-generic", "6.8.0-45-generic")
 	e.hostM.ubuntu(e.host)
 	e.hostM.rebootedAfter = func() bool { return e.reboots > 0 }
+	for _, key := range []string{"default/web", "dev/fed", "default/alp", "default/old"} {
+		stats(e.incus.FakeRunner(key), "6.8.0-45-generic", "")
+	}
 	e.web.ubuntu(e.incus.FakeRunner("default/web"))
 	e.web.docker(e.incus.FakeRunner("default/web"))
 	e.web.rebootedAfter = func() bool { return len(e.incus.Restarts) > 0 }
@@ -363,7 +391,7 @@ func TestUpgradeGuest(t *testing.T) {
 	if len(snaps) != 1 || !strings.HasPrefix(snaps[0].Name, SnapshotPrefix) {
 		t.Errorf("snapshots: %v", snaps)
 	}
-	if !e.incus.FakeRunner("default/web").Ran("docker compose -p app --project-directory /root/app -f /root/app/compose.yaml up -d --remove-orphans") {
+	if !e.incus.FakeRunner("default/web").Ran("sh /root/app docker compose -p app -f /root/app/compose.yaml up -d --remove-orphans") {
 		t.Error("compose project not recreated")
 	}
 	if e.host.Ran("--force-confdef") {

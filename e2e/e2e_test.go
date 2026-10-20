@@ -39,6 +39,7 @@ func env(key, def string) string {
 type broker struct {
 	mu       sync.Mutex
 	retained map[string][]byte
+	history  map[string][][]byte
 	client   *mqtt.Paho
 }
 
@@ -58,11 +59,12 @@ func connect(t *testing.T, user, password string) *mqtt.Paho {
 }
 
 func homeAssistant(t *testing.T) *broker {
-	b := &broker{retained: map[string][]byte{}}
+	b := &broker{retained: map[string][]byte{}, history: map[string][][]byte{}}
 	b.client = connect(t, env("E2E_HA_USER", "homeassistant"), env("E2E_HA_PASSWORD", "ha"))
 	err := b.client.Subscribe("#", func(topic string, payload []byte) {
 		b.mu.Lock()
 		defer b.mu.Unlock()
+		b.history[topic] = append(b.history[topic], append([]byte(nil), payload...))
 		if len(payload) == 0 {
 			delete(b.retained, topic)
 			return
@@ -80,6 +82,37 @@ func (b *broker) get(topic string) ([]byte, bool) {
 	defer b.mu.Unlock()
 	p, ok := b.retained[topic]
 	return p, ok
+}
+
+// discovery returns the components of a device's latest discovery message.
+func (b *broker) discovery(device string) map[string]map[string]any {
+	p, _ := b.get("homeassistant/device/" + hostID + "/" + device + "/config")
+	var d struct {
+		Cmps map[string]map[string]any `json:"cmps"`
+	}
+	_ = json.Unmarshal(p, &d)
+	return d.Cmps
+}
+
+// removedAny reports whether a discovery message of the device deleted a
+// component whose key starts with prefix.
+func (b *broker) removedAny(device, prefix string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, p := range b.history["homeassistant/device/"+hostID+"/"+device+"/config"] {
+		var d struct {
+			Cmps map[string]map[string]any `json:"cmps"`
+		}
+		if json.Unmarshal(p, &d) != nil {
+			continue
+		}
+		for key, c := range d.Cmps {
+			if strings.HasPrefix(key, prefix) && len(c) == 1 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (b *broker) state(device string) map[string]any {
@@ -197,6 +230,76 @@ func TestE2E(t *testing.T) {
 		}
 	})
 
+	t.Run("system sensors", func(t *testing.T) {
+		for _, d := range []string{hostID, device("docker_web"), device("podman_fed"), device("lab_deb"), device("alpine")} {
+			// The host is checked after the guests and its apt refresh is slow.
+			eventually(t, 10*time.Minute, "system sensors of "+d, func() bool {
+				return b.state(d)["kernel"] != nil
+			})
+			st := b.state(d)
+			for _, field := range []string{"kernel", "arch", "boot_time", "cpu_percent", "memory_percent", "disk_percent", "load_1"} {
+				if st[field] == nil {
+					t.Errorf("%s: %s missing", d, field)
+				}
+			}
+		}
+		host := b.state(hostID)
+		if host["guests"] != 5.0 || host["guests_running"] != 4.0 || host["updates_total"] == nil {
+			t.Errorf("host totals: guests=%v running=%v updates=%v", host["guests"], host["guests_running"], host["updates_total"])
+		}
+		if _, ok := b.discovery(device("docker_web"))["kernel_update"]; ok {
+			t.Error("containers must not get a kernel update sensor")
+		}
+		if _, ok := b.discovery(hostID)["kernel_update"]; !ok {
+			t.Error("host misses the kernel update sensor")
+		}
+	})
+
+	webCtr := "docker_app_sleeper_1"
+	t.Run("container entities", func(t *testing.T) {
+		cmps := b.discovery(device("docker_web"))
+		upd := cmps["ctr_"+webCtr+"_update"]
+		if upd == nil || upd["payload_install"] != "upgrade_container "+webCtr {
+			t.Fatalf("container update entity: %v (components: %d)", upd, len(cmps))
+		}
+		if cmps["ctr_"+webCtr+"_running"] == nil || cmps["ctr_"+webCtr+"_restart"] == nil {
+			t.Fatal("container running sensor or restart button missing")
+		}
+		ctr := b.state(device("docker_web"))["ctr"].(map[string]any)[webCtr].(map[string]any)
+		u := ctr["update"].(map[string]any)
+		if ctr["running"] != true || u["installed_version"] == u["latest_version"] {
+			t.Fatalf("container should run and have a newer image: %v", ctr)
+		}
+	})
+
+	t.Run("upgrade a single container", func(t *testing.T) {
+		oldImage := incus(t, "exec", "docker-web", "--", "docker", "inspect", "--format", "{{.Image}}", "app-sleeper-1")
+		since := time.Now()
+		b.command(t, device("docker_web"), "upgrade_container "+webCtr)
+		waitForRun(t, b, device("docker_web"), since)
+		if newImage := incus(t, "exec", "docker-web", "--", "docker", "inspect", "--format", "{{.Image}}", "app-sleeper-1"); newImage == oldImage {
+			t.Error("container was not recreated on the newer image")
+		}
+		eventually(t, 5*time.Minute, "container up to date", func() bool {
+			ctr, _ := b.state(device("docker_web"))["ctr"].(map[string]any)[webCtr].(map[string]any)
+			u, _ := ctr["update"].(map[string]any)
+			return u != nil && u["installed_version"] == u["latest_version"]
+		})
+	})
+
+	t.Run("restart a container", func(t *testing.T) {
+		started := func() string {
+			return incus(t, "exec", "docker-web", "--", "docker", "inspect", "--format", "{{.State.StartedAt}}", "app-sleeper-1")
+		}
+		before := started()
+		since := time.Now()
+		b.command(t, device("docker_web"), "restart_container "+webCtr)
+		waitForRun(t, b, device("docker_web"), since)
+		if started() == before {
+			t.Error("container was not restarted")
+		}
+	})
+
 	t.Run("intruder cannot command", func(t *testing.T) {
 		intruder := connect(t, env("E2E_INTRUDER_USER", "intruder"), env("E2E_INTRUDER_PASSWORD", "intruder"))
 		before := incus(t, "query", "/1.0/instances/deb/state?project=lab")
@@ -209,17 +312,12 @@ func TestE2E(t *testing.T) {
 	})
 
 	t.Run("upgrade docker guest", func(t *testing.T) {
-		oldImage := incus(t, "exec", "docker-web", "--", "docker", "inspect", "--format", "{{.Image}}", "app-sleeper-1")
 		since := time.Now()
 		b.command(t, device("docker_web"), "upgrade")
 		run := waitForRun(t, b, device("docker_web"), since)
 		t.Logf("steps: %v", run["steps"])
 		if !strings.Contains(incus(t, "snapshot", "list", "docker-web", "--format", "csv"), "ha-agent-") {
 			t.Error("no pre-upgrade snapshot")
-		}
-		newImage := incus(t, "exec", "docker-web", "--", "docker", "inspect", "--format", "{{.Image}}", "app-sleeper-1")
-		if newImage == oldImage {
-			t.Error("compose container was not recreated on the newer image")
 		}
 		eventually(t, 10*time.Minute, "refreshed state", func() bool {
 			st := b.state(device("docker_web"))
@@ -267,6 +365,21 @@ func TestE2E(t *testing.T) {
 		if _, err := exec.Command("incus", "exec", "docker-web", "--", "test", "-e", "/root/after-upgrade").CombinedOutput(); err == nil {
 			t.Error("file created after the upgrade survived the restore")
 		}
+	})
+
+	t.Run("removed container entities are deleted", func(t *testing.T) {
+		incus(t, "exec", "podman-fed", "--", "sh", "-c", "podman rm -f $(podman ps -aq)")
+		b.command(t, device("podman_fed"), "check")
+		eventually(t, 5*time.Minute, "container entities of podman-fed deleted", func() bool {
+			for key := range b.discovery(device("podman_fed")) {
+				if strings.HasPrefix(key, "ctr_") {
+					return false
+				}
+			}
+			// podman-compose names containers differently between versions,
+			// so look for any container entity that was deleted.
+			return b.removedAny(device("podman_fed"), "ctr_")
+		})
 	})
 
 	t.Run("guest lifecycle", func(t *testing.T) {

@@ -17,6 +17,9 @@ const (
 	CmdUpgradeAll        = "upgrade_all"
 	CmdReboot            = "reboot"
 	CmdRestore           = "restore_snapshot"
+	// Container commands take the container key as argument: "upgrade_container docker_web".
+	CmdUpgradeContainer = "upgrade_container"
+	CmdRestartContainer = "restart_container"
 )
 
 // Topics computes the MQTT topics of one agent.
@@ -81,18 +84,40 @@ type Device struct {
 	ViaDevice string
 	// Host is true for the machine the agent runs on.
 	Host bool
-	// Guest is true for Incus guests.
+	// Guest is true for Incus and Proxmox guests.
 	Guest bool
-	// Containers is true when docker or podman was found.
-	Containers bool
+	// SharedKernel is true for containers (LXC, Incus containers): they run
+	// the host's kernel and have no kernel or temperature of their own.
+	SharedKernel bool
+	// Temperature is true when the machine reports a temperature.
+	Temperature bool
+	// Engines is true when docker or podman was found.
+	Engines bool
+	// Containers are the docker/podman containers that get their own entities.
+	Containers []Container
+}
+
+// Container is a docker/podman container with its own entities.
+type Container struct {
+	// Key identifies the container in commands and the state; see ContainerKey.
+	Key  string
+	Name string
+	// Managed containers can be updated by the agent (compose or podman auto-update).
+	Managed bool
+}
+
+// ContainerKey is the identifier of a container on one machine.
+func ContainerKey(engine, name string) string {
+	return Slug(engine, name)
 }
 
 // Features enabled for the whole agent.
 type Features struct {
-	Upgrade  bool
-	Reboot   bool
-	Restore  bool
-	Schedule bool
+	Upgrade           bool
+	Reboot            bool
+	Restore           bool
+	Schedule          bool
+	RestartContainers bool
 }
 
 // Origin identifies the agent in discovery messages.
@@ -104,8 +129,11 @@ type Origin struct {
 
 type component map[string]any
 
-// Payload builds the device discovery payload.
-func Payload(t Topics, o Origin, d Device, f Features) ([]byte, error) {
+// Payload builds the device discovery payload. previous holds the components
+// (key to platform) of the last published payload: components that are gone
+// are sent with only their platform, which makes Home Assistant delete their
+// entities. It returns the components that are published now.
+func Payload(t Topics, o Origin, d Device, f Features, previous map[string]string) ([]byte, map[string]string, error) {
 	state := t.State(d.ID)
 	cmd := t.Command(d.ID)
 	cmps := map[string]component{}
@@ -126,29 +154,41 @@ func Payload(t Topics, o Origin, d Device, f Features) ([]byte, error) {
 		}
 		add(key, "button", name, c)
 	}
-	updateEntity := func(key, name, field, install string) {
-		c := component{"value_template": "{{ value_json." + field + " | tojson }}"}
-		if f.Upgrade {
+	updateEntity := func(key, name, template, install string) {
+		c := component{"value_template": template}
+		if install != "" {
 			c["command_topic"] = cmd
 			c["payload_install"] = install
 		}
 		add(key, "update", name, c)
 	}
+	measurement := func(key, name, field, unit, icon string, extra component) {
+		c := component{"value_template": "{{ value_json." + field + " }}", "state_class": "measurement", "icon": icon}
+		if unit != "" {
+			c["unit_of_measurement"] = unit
+		}
+		for k, v := range extra {
+			c[k] = v
+		}
+		add(key, "sensor", name, c)
+	}
+	installIf := func(ok bool, payload string) string {
+		if ok {
+			return payload
+		}
+		return ""
+	}
 
-	updateEntity("system_update", "System updates", "system_update", CmdUpgradePackages)
-	add("updates", "sensor", "Pending updates", component{
-		"value_template":           "{{ value_json.updates }}",
-		"state_class":              "measurement",
-		"unit_of_measurement":      "updates",
-		"icon":                     "mdi:package-up",
+	// Updates.
+	updateEntity("system_update", "System updates", "{{ value_json.system_update | tojson }}", installIf(f.Upgrade, CmdUpgradePackages))
+	measurement("updates", "Pending updates", "updates", "updates", "mdi:package-up", component{
 		"json_attributes_topic":    state,
 		"json_attributes_template": "{{ {'packages': value_json.update_list, 'package_manager': value_json.package_manager} | tojson }}",
 	})
-	add("security_updates", "sensor", "Security updates", component{
-		"value_template":      "{{ value_json.security_updates }}",
-		"state_class":         "measurement",
-		"unit_of_measurement": "updates",
-		"icon":                "mdi:shield-alert",
+	measurement("security_updates", "Security updates", "security_updates", "updates", "mdi:shield-alert", nil)
+	add("updates_available", "binary_sensor", "Updates available", component{
+		"value_template": "{{ 'ON' if value_json.updates_available else 'OFF' }}",
+		"device_class":   "update",
 	})
 	add("reboot_required", "binary_sensor", "Reboot required", component{
 		"value_template": "{{ 'ON' if value_json.reboot_required else 'OFF' }}",
@@ -168,6 +208,44 @@ func Payload(t Topics, o Origin, d Device, f Features) ([]byte, error) {
 		"json_attributes_topic":    state,
 		"json_attributes_template": "{{ (value_json.last_run or {}) | tojson }}",
 	})
+
+	// System.
+	add("kernel", "sensor", "Kernel", component{
+		"value_template":           "{{ value_json.kernel }}",
+		"icon":                     "mdi:penguin",
+		"json_attributes_topic":    state,
+		"json_attributes_template": "{{ {'latest_installed': value_json.latest_kernel, 'arch': value_json.arch} | tojson }}",
+	})
+	if !d.SharedKernel {
+		add("kernel_update", "binary_sensor", "Kernel update pending", component{
+			"value_template": "{{ 'ON' if value_json.kernel_update else 'OFF' }}",
+			"device_class":   "update",
+		})
+	}
+	add("boot_time", "sensor", "Last boot", component{
+		"value_template": "{{ value_json.boot_time }}",
+		"device_class":   "timestamp",
+	})
+	measurement("cpu", "CPU usage", "cpu_percent", "%", "mdi:cpu-64-bit", component{"suggested_display_precision": 1})
+	measurement("memory", "Memory usage", "memory_percent", "%", "mdi:memory", component{
+		"suggested_display_precision": 1,
+		"json_attributes_topic":       state,
+		"json_attributes_template":    "{{ {'total_bytes': value_json.memory_total, 'available_bytes': value_json.memory_available} | tojson }}",
+	})
+	measurement("disk", "Disk usage", "disk_percent", "%", "mdi:harddisk", component{
+		"suggested_display_precision": 1,
+		"json_attributes_topic":       state,
+		"json_attributes_template":    "{{ {'total_bytes': value_json.disk_total, 'used_bytes': value_json.disk_used} | tojson }}",
+	})
+	measurement("load_1", "Load (1 min)", "load_1", "", "mdi:gauge", nil)
+	measurement("load_5", "Load (5 min)", "load_5", "", "mdi:gauge", nil)
+	measurement("load_15", "Load (15 min)", "load_15", "", "mdi:gauge", nil)
+	if d.Temperature {
+		measurement("temperature", "Temperature", "temperature", "°C", "", component{"device_class": "temperature"})
+		delete(cmps["temperature"], "icon")
+	}
+
+	// Diagnostics.
 	add("last_check", "sensor", "Last check", component{
 		"value_template":  "{{ value_json.last_check }}",
 		"device_class":    "timestamp",
@@ -185,25 +263,34 @@ func Payload(t Topics, o Origin, d Device, f Features) ([]byte, error) {
 	})
 	button("check", "Check for updates", CmdCheck, component{"icon": "mdi:refresh", "entity_category": "diagnostic"})
 
-	if d.Containers {
-		updateEntity("container_update", "Container images", "container_update", CmdUpgradeContainers)
-		add("image_updates", "sensor", "Container image updates", component{
-			"value_template":           "{{ value_json.image_updates }}",
-			"state_class":              "measurement",
-			"unit_of_measurement":      "images",
-			"icon":                     "mdi:docker",
+	// Containers.
+	if d.Engines {
+		updateEntity("container_update", "Container images", "{{ value_json.container_update | tojson }}", installIf(f.Upgrade, CmdUpgradeContainers))
+		measurement("image_updates", "Container image updates", "image_updates", "images", "mdi:docker", component{
 			"json_attributes_topic":    state,
 			"json_attributes_template": "{{ {'images': value_json.image_update_list, 'unknown': value_json.images_unknown} | tojson }}",
 		})
-		add("containers_running", "sensor", "Containers running", component{
-			"value_template":           "{{ value_json.containers_running }}",
-			"state_class":              "measurement",
-			"icon":                     "mdi:package-variant-closed",
+		measurement("containers_running", "Containers running", "containers_running", "", "mdi:package-variant-closed", component{
 			"json_attributes_topic":    state,
 			"json_attributes_template": "{{ {'total': value_json.containers, 'engines': value_json.engines, 'projects': value_json.projects} | tojson }}",
 		})
 	}
+	for _, c := range d.Containers {
+		ref := "(value_json.ctr.get('" + c.Key + "') or {})"
+		add("ctr_"+c.Key+"_running", "binary_sensor", "Container "+c.Name, component{
+			"value_template":           "{{ 'ON' if " + ref + ".get('running') else 'OFF' }}",
+			"device_class":             "running",
+			"json_attributes_topic":    state,
+			"json_attributes_template": "{{ " + ref + ".get('info', {}) | tojson }}",
+		})
+		updateEntity("ctr_"+c.Key+"_update", "Container "+c.Name+" image", "{{ ("+ref+".get('update') or {}) | tojson }}",
+			installIf(f.Upgrade && c.Managed, CmdUpgradeContainer+" "+c.Key))
+		if f.RestartContainers {
+			button("ctr_"+c.Key+"_restart", "Restart container "+c.Name, CmdRestartContainer+" "+c.Key, component{"device_class": "restart"})
+		}
+	}
 
+	// Actions.
 	if f.Upgrade {
 		button("upgrade", "Upgrade", CmdUpgrade, component{"icon": "mdi:update"})
 	}
@@ -220,6 +307,11 @@ func Payload(t Topics, o Origin, d Device, f Features) ([]byte, error) {
 			"value_template": "{{ 'ON' if value_json.running else 'OFF' }}",
 			"device_class":   "running",
 		})
+		add("platform", "sensor", "Platform", component{
+			"value_template":  "{{ value_json.platform }}",
+			"entity_category": "diagnostic",
+			"icon":            "mdi:server",
+		})
 		if f.Restore {
 			button("restore_snapshot", "Restore pre-upgrade snapshot", CmdRestore, component{"icon": "mdi:backup-restore"})
 		}
@@ -231,11 +323,18 @@ func Payload(t Topics, o Origin, d Device, f Features) ([]byte, error) {
 			"entity_category": "diagnostic",
 			"icon":            "mdi:tag",
 		})
-		add("guests", "sensor", "Managed guests", component{
-			"value_template": "{{ value_json.guests }}",
-			"state_class":    "measurement",
-			"icon":           "mdi:server-network",
+		measurement("guests", "Managed guests", "guests", "", "mdi:server-network", nil)
+		measurement("guests_running", "Guests running", "guests_running", "", "mdi:server-network", nil)
+		measurement("guests_with_updates", "Guests with updates", "guests_with_updates", "", "mdi:package-up", component{
+			"json_attributes_topic":    state,
+			"json_attributes_template": "{{ {'guests': value_json.guests_with_updates_list} | tojson }}",
 		})
+		measurement("guests_reboot_required", "Guests needing a reboot", "guests_reboot_required", "", "mdi:restart-alert", component{
+			"json_attributes_topic":    state,
+			"json_attributes_template": "{{ {'guests': value_json.guests_reboot_required_list} | tojson }}",
+		})
+		measurement("updates_total", "Pending updates (host and guests)", "updates_total", "updates", "mdi:package-up", nil)
+		measurement("image_updates_total", "Container image updates (host and guests)", "image_updates_total", "images", "mdi:docker", nil)
 		if f.Upgrade {
 			button("upgrade_all", "Upgrade host and guests", CmdUpgradeAll, component{"icon": "mdi:update"})
 		}
@@ -256,6 +355,16 @@ func Payload(t Topics, o Origin, d Device, f Features) ([]byte, error) {
 		}
 	}
 
+	current := make(map[string]string, len(cmps))
+	for key, c := range cmps {
+		current[key] = c["p"].(string)
+	}
+	for key, platform := range previous {
+		if _, ok := cmps[key]; !ok {
+			cmps[key] = component{"p": platform} // removes the entity
+		}
+	}
+
 	dev := map[string]any{
 		"ids":  []string{"linux_ha_agent_" + d.ID},
 		"name": d.Name,
@@ -266,11 +375,11 @@ func Payload(t Topics, o Origin, d Device, f Features) ([]byte, error) {
 	if d.ViaDevice != "" {
 		dev["via_device"] = "linux_ha_agent_" + d.ViaDevice
 	}
-	payload := map[string]any{
+	payload, err := json.Marshal(map[string]any{
 		"dev":  dev,
 		"o":    map[string]any{"name": o.Name, "sw": o.Version, "url": o.URL},
 		"cmps": cmps,
 		"qos":  1,
-	}
-	return json.Marshal(payload)
+	})
+	return payload, current, err
 }

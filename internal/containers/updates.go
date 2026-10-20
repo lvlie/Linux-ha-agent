@@ -70,7 +70,9 @@ func headDigest(ctx context.Context, ref string) (string, error) {
 
 // ImageUpdate is an image with a newer version in its registry.
 type ImageUpdate struct {
-	Image      string   `json:"image"`
+	Image string `json:"image"`
+	// Digest is the newer digest in the registry.
+	Digest     string   `json:"digest"`
 	Containers []string `json:"containers"`
 	// Managed is true when the agent can update it (compose or podman
 	// auto-update); other containers must be recreated by hand.
@@ -116,7 +118,7 @@ func CheckImages(ctx context.Context, containers []Container, local map[string][
 		if slices.Contains(localDigests, remoteDigest) {
 			continue
 		}
-		update := ImageUpdate{Image: img, Managed: true}
+		update := ImageUpdate{Image: img, Digest: remoteDigest, Managed: true}
 		for _, c := range users {
 			update.Containers = append(update.Containers, c.Name)
 			if c.Project == "" && !c.AutoUpdate {

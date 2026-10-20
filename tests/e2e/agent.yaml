@@ -16,4 +16,5 @@ permissions:
   upgrade: true
   reboot: true
   restore: true
+  restart_containers: true
 log_level: debug

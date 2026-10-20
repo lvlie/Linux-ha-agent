@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -60,6 +61,12 @@ func TestMemoryRetained(t *testing.T) {
 type broker struct {
 	server *mochi.Server
 	addr   string
+	once   sync.Once
+}
+
+// stop closes the broker once (mochi panics on a second Close).
+func (b *broker) stop() {
+	b.once.Do(func() { _ = b.server.Close() })
 }
 
 func startBroker(t *testing.T, ledger *auth.Ledger) *broker {
@@ -70,19 +77,39 @@ func startBroker(t *testing.T, ledger *auth.Ledger) *broker {
 	}
 	addr := l.Addr().String()
 	_ = l.Close()
+	return startBrokerAt(t, addr, ledger)
+}
 
+// startBrokerAt starts a broker on addr, retrying while a previous broker
+// on the same address releases it.
+func startBrokerAt(t *testing.T, addr string, ledger *auth.Ledger) *broker {
+	t.Helper()
+	for i := 0; ; i++ {
+		b, err := tryBroker(addr, ledger)
+		if err == nil {
+			t.Cleanup(b.stop)
+			return b
+		}
+		if i == 50 {
+			t.Fatal(err)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func tryBroker(addr string, ledger *auth.Ledger) (*broker, error) {
 	server := mochi.New(&mochi.Options{InlineClient: true, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if ledger == nil {
 		_ = server.AddHook(new(auth.AllowHook), nil)
 	} else if err := server.AddHook(new(auth.Hook), &auth.Options{Ledger: ledger}); err != nil {
-		t.Fatal(err)
+		return nil, err
 	}
 	if err := server.AddListener(listeners.NewTCP(listeners.Config{ID: "tcp", Address: addr})); err != nil {
-		t.Fatal(err)
+		_ = server.Close()
+		return nil, err
 	}
 	go func() { _ = server.Serve() }()
-	t.Cleanup(func() { _ = server.Close() })
-	return &broker{server: server, addr: addr}
+	return &broker{server: server, addr: addr}, nil
 }
 
 func waitFor(t *testing.T, what string, cond func() bool) {
@@ -98,10 +125,11 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 }
 
 func TestPahoWithPasswordAndWill(t *testing.T) {
-	b := startBroker(t, &auth.Ledger{Auth: auth.AuthRules{
+	ledger := &auth.Ledger{Auth: auth.AuthRules{
 		{Username: "agent", Password: "s3cret", Allow: true},
 		{Username: "watcher", Password: "w", Allow: true},
-	}})
+	}}
+	b := startBroker(t, ledger)
 	pwFile := filepath.Join(t.TempDir(), "pw")
 	if err := os.WriteFile(pwFile, []byte("s3cret\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -145,8 +173,8 @@ func TestPahoWithPasswordAndWill(t *testing.T) {
 		t.Fatalf("status %q", s)
 	}
 
-	// Kill the connection without a DISCONNECT: the broker sends the will,
-	// the client reconnects and its subscriptions are restored.
+	// Kill the connection without a DISCONNECT: the broker sends the will
+	// and the client reconnects.
 	cl, ok := b.server.Clients.Get("agent")
 	if !ok {
 		t.Fatal("agent not connected")
@@ -164,6 +192,18 @@ func TestPahoWithPasswordAndWill(t *testing.T) {
 	case <-connects:
 	case <-time.After(20 * time.Second):
 		t.Fatal("client did not reconnect")
+	}
+
+	// Restart the broker. The new broker knows nothing about the client, so
+	// receiving commands afterwards shows the client restored its own
+	// subscriptions. (Reusing the killed session instead races with the
+	// broker cleaning it up.)
+	b.stop()
+	startBrokerAt(t, b.addr, ledger)
+	select {
+	case <-connects:
+	case <-time.After(30 * time.Second):
+		t.Fatal("client did not reconnect to the restarted broker")
 	}
 	waitFor(t, "command after reconnect", func() bool {
 		_ = watcher.Publish("agent/cmd", false, []byte("check"))
