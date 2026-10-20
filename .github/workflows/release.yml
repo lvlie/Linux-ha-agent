@@ -4,6 +4,14 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # Release from the Actions tab (or the API) without pushing a tag first:
+  # the release, and with it the tag, is created on the selected branch.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to release, e.g. v0.1.0
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -29,12 +37,26 @@ jobs:
           go-version-file: go.mod
           cache: false # no cache in release builds
 
+      - name: Determine the version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" = workflow_dispatch ]; then
+            version="$INPUT_VERSION"
+          else
+            version="$GITHUB_REF_NAME"
+          fi
+          if ! echo "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::version must look like v1.2.3, got '$version'"
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
       - name: Test
         run: go test -race -count=1 ./...
 
       - name: Build
-        env:
-          VERSION: ${{ github.ref_name }}
         run: |
           make packages GOARCH=amd64 VERSION="$VERSION"
           make packages GOARCH=arm64 VERSION="$VERSION"
@@ -52,5 +74,7 @@ jobs:
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
-        run: gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes --verify-tag
+        run: |
+          # A pushed tag already exists; a manual release creates it on this commit.
+          gh release create "$VERSION" dist/* --repo "$GITHUB_REPOSITORY" --title "$VERSION" \
+            --generate-notes --target "$GITHUB_SHA"
