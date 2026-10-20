@@ -5,8 +5,8 @@ Wants=network-online.target
 After=network-online.target incus.service docker.service podman.service
 
 [Service]
-ExecStartPre=/usr/local/bin/linux-ha-agent -config /etc/linux-ha-agent/config.yaml -check-config
-ExecStart=/usr/local/bin/linux-ha-agent -config /etc/linux-ha-agent/config.yaml
+ExecStartPre=/usr/bin/linux-ha-agent -config /etc/linux-ha-agent/config.yaml -check-config
+ExecStart=/usr/bin/linux-ha-agent -config /etc/linux-ha-agent/config.yaml
 Restart=on-failure
 RestartSec=10
 # If the agent is stopped or restarted (for example by the very upgrade it is

@@ -110,18 +110,61 @@ the guest list current and trigger a check when a guest starts.
 
 ## Install
 
-### Debian, Ubuntu, Fedora, RHEL
+Every [release](https://github.com/lvlie/linux-ha-agent/releases) has `.deb`
+and `.rpm` packages and plain binaries for amd64 and arm64, with SHA-256
+checksums and signed build provenance. The binary is static: it runs on any
+Linux distribution without dependencies.
+
+### Debian, Ubuntu, Proxmox VE (.deb)
+
+```sh
+curl -fsSLO https://github.com/lvlie/linux-ha-agent/releases/download/v0.1.0/linux-ha-agent_0.1.0-1_amd64.deb
+sudo apt install ./linux-ha-agent_0.1.0-1_amd64.deb
+```
+
+### Fedora, RHEL, Rocky, Alma (.rpm)
+
+```sh
+sudo dnf install https://github.com/lvlie/linux-ha-agent/releases/download/v0.1.0/linux-ha-agent-0.1.0-1.x86_64.rpm
+```
+
+The packages install:
+
+| | |
+| --- | --- |
+| `/usr/bin/linux-ha-agent` | the agent |
+| `/etc/linux-ha-agent/config.yaml` | configuration (kept on upgrades and removal) |
+| `/usr/lib/systemd/system/linux-ha-agent.service` | systemd unit, not started until you enable it |
+| `/usr/share/doc/linux-ha-agent/` | README, example configuration, Mosquitto ACL |
+
+Upgrading the package restarts a running agent. Removing it stops the
+service; `apt purge` also removes the configuration.
+
+### Install script
+
+Picks the right package (or the plain binary on other distributions) for
+the latest or a given release and verifies it:
 
 ```sh
 curl -fsSLO https://github.com/lvlie/linux-ha-agent/releases/latest/download/install.sh
 less install.sh        # read it first
-sudo sh install.sh
+sudo sh install.sh     # or: sudo sh install.sh v0.1.0
 ```
 
-The script downloads the binary for your architecture, verifies its SHA-256
-checksum and, if the GitHub CLI is installed, its signed build provenance. It
-installs the systemd unit and an example configuration (never overwriting an
-existing one). Then:
+### With Go
+
+With Go installed (1.26.7 or newer; older Go versions download it
+automatically):
+
+```sh
+go install github.com/lvlie/linux-ha-agent/cmd/linux-ha-agent@latest
+sudo install -m 0755 "$(go env GOPATH)/bin/linux-ha-agent" /usr/local/bin/
+```
+
+Then add the [systemd unit](packaging/systemd/linux-ha-agent.service) (change
+`/usr/bin` to `/usr/local/bin`) and a configuration.
+
+### After installing
 
 ```sh
 sudoedit /etc/linux-ha-agent/config.yaml
@@ -131,8 +174,8 @@ sudo systemctl enable --now linux-ha-agent
 journalctl -u linux-ha-agent -f
 ```
 
-Try it without MQTT: `sudo linux-ha-agent -config config.yaml -once` checks
-everything once and prints the state as JSON.
+Try it without MQTT: `sudo linux-ha-agent -config /etc/linux-ha-agent/config.yaml -once`
+checks everything once and prints the state as JSON.
 
 ### NixOS
 
@@ -250,6 +293,7 @@ were deleted while the agent was down.
 make test     # unit and integration tests (race detector)
 make lint     # pre-commit: golangci-lint, yamllint, shellcheck, actionlint, zizmor, ...
 make build    # static binary in dist/
+make packages # .deb and .rpm in dist/ (GOARCH=amd64|arm64)
 make nix      # nix flake check
 ```
 
@@ -265,6 +309,10 @@ Tests:
 - **MQTT integration tests** with an embedded broker: authentication, last
   will, reconnects, and the ACL (another agent cannot command or spoof).
 - **Registry tests** against an in-memory OCI registry.
+- **Packages**: the `.deb` is installed, reinstalled, removed and purged on
+  Ubuntu 24.04 and Debian 13, the `.rpm` on Fedora 43 and Rocky Linux 10
+  ([`install-test.sh`](tests/packages/install-test.sh)); `go install` of the
+  pushed commit is tested too.
 - **End-to-end** ([`e2e.yml`](.github/workflows/e2e.yml)): a GitHub runner
   becomes an Incus host (stable and 6.0 LTS) with Ubuntu + docker, Fedora +
   podman, Debian in another project, Alpine and a stopped guest, and a real

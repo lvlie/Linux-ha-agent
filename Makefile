@@ -1,11 +1,16 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 GOARCH  ?= $(shell go env GOARCH)
 BINARY  := dist/linux-ha-agent-linux-$(GOARCH)
+# Package versions must be semver, see packaging/pkg-version.sh.
+PKG_VERSION ?= $(shell packaging/pkg-version.sh "$(VERSION)")
+# nfpm itself is built for this machine, whatever GOARCH is being packaged.
+NFPM := env -u GOARCH -u GOOS go run github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0
 
-.PHONY: help build test lint vuln e2e-build nix clean
+.PHONY: help build packages test lint vuln nix clean
 
 help:
 	@echo "make build    static binary in dist/ (GOARCH=amd64|arm64, VERSION=...)"
+	@echo "make packages .deb and .rpm in dist/ (builds the binary first)"
 	@echo "make test     unit and integration tests with the race detector"
 	@echo "make lint     all pre-commit hooks, including golangci-lint"
 	@echo "make vuln     govulncheck"
@@ -14,6 +19,12 @@ help:
 build:
 	CGO_ENABLED=0 GOOS=linux GOARCH=$(GOARCH) go build -trimpath \
 		-ldflags "-s -w -X main.version=$(VERSION)" -o $(BINARY) ./cmd/linux-ha-agent
+
+packages: build
+	install -D -m 0755 $(BINARY) dist/stage/linux-ha-agent
+	PKG_ARCH=$(GOARCH) PKG_VERSION=$(PKG_VERSION) $(NFPM) package --config nfpm.yaml --packager deb --target dist/
+	PKG_ARCH=$(GOARCH) PKG_VERSION=$(PKG_VERSION) $(NFPM) package --config nfpm.yaml --packager rpm --target dist/
+	rm -rf dist/stage
 
 test:
 	go test -race -count=1 ./...

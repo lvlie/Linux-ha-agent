@@ -99,9 +99,9 @@ jobs:
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
   build:
-    name: Build (${{ matrix.arch }})
+    name: Build binaries and packages (${{ matrix.arch }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     strategy:
       matrix:
         arch: [amd64, arm64]
@@ -110,22 +110,75 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0 # git describe needs the tags
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
 
-      - name: Build static binary
+      - name: Build binary, .deb and .rpm
         env:
           GOARCH: ${{ matrix.arch }}
-        run: make build GOARCH="$GOARCH" VERSION="${GITHUB_SHA::12}"
+        run: make packages GOARCH="$GOARCH"
 
-      - name: Upload binary
+      - name: Upload
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: linux-ha-agent-linux-${{ matrix.arch }}
+          name: linux-ha-agent-${{ matrix.arch }}
           path: dist/
+
+  packages:
+    name: Install package on ${{ matrix.image }}
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {image: "ubuntu:24.04", format: deb}
+          - {image: "debian:13", format: deb}
+          - {image: "fedora:43", format: rpm}
+          - {image: "rockylinux/rockylinux:10", format: rpm}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download packages
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: linux-ha-agent-amd64
+          path: dist
+
+      - name: Install, upgrade, remove
+        env:
+          IMAGE: ${{ matrix.image }}
+          FORMAT: ${{ matrix.format }}
+        run: docker run --rm -v "$PWD:/src:ro" -e FORMAT "$IMAGE" sh /src/tests/packages/install-test.sh
+
+  go-install:
+    name: go install
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Install the pushed commit like a user would
+        env:
+          # For pull requests GITHUB_SHA is a merge commit that only exists on GitHub.
+          COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+          GOPROXY: direct
+        run: |
+          cd "$(mktemp -d)"
+          go install "github.com/lvlie/linux-ha-agent/cmd/linux-ha-agent@${COMMIT}"
+          "$(go env GOPATH)/bin/linux-ha-agent" -version | tee /dev/stderr | grep -q "${COMMIT:0:12}"
 
   nix:
     name: Nix flake (package and NixOS module)

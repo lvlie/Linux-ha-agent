@@ -1,0 +1,61 @@
+# Builds the .deb and .rpm packages: make packages (see Makefile).
+# PKG_ARCH and PKG_VERSION come from the environment.
+---
+name: linux-ha-agent
+arch: ${PKG_ARCH}
+platform: linux
+version: ${PKG_VERSION}
+version_schema: semver
+release: "1"
+section: admin
+priority: optional
+maintainer: lvlie <lvlie@users.noreply.github.com>
+vendor: lvlie
+homepage: https://github.com/lvlie/linux-ha-agent
+license: GPL-3.0-or-later
+description: |-
+  Home Assistant MQTT agent for Linux machines, Incus and Proxmox VE hosts.
+  Publishes pending updates, reboot status and Docker/Podman containers of the
+  machine and its guests to Home Assistant, and upgrades them on request or on
+  a schedule.
+
+recommends:
+  - ca-certificates
+
+contents:
+  # Staged by `make packages` for the architecture being packaged.
+  - src: dist/stage/linux-ha-agent
+    dst: /usr/bin/linux-ha-agent
+    file_info:
+      mode: 0755
+
+  - src: packaging/systemd/linux-ha-agent.service
+    dst: /usr/lib/systemd/system/linux-ha-agent.service
+    file_info:
+      mode: 0644
+
+  # Never overwritten on upgrades.
+  - src: config.example.yaml
+    dst: /etc/linux-ha-agent/config.yaml
+    type: config|noreplace
+    file_info:
+      mode: 0640
+
+  - dst: /var/lib/linux-ha-agent
+    type: dir
+    file_info:
+      mode: 0700
+
+  - src: config.example.yaml
+    dst: /usr/share/doc/linux-ha-agent/config.example.yaml
+  - src: packaging/mosquitto/acl.conf
+    dst: /usr/share/doc/linux-ha-agent/mosquitto-acl.conf
+  - src: README.md
+    dst: /usr/share/doc/linux-ha-agent/README.md
+  - src: LICENSE
+    dst: /usr/share/doc/linux-ha-agent/LICENSE
+
+scripts:
+  postinstall: packaging/scripts/postinstall.sh
+  preremove: packaging/scripts/preremove.sh
+  postremove: packaging/scripts/postremove.sh
