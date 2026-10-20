@@ -363,7 +363,7 @@ func TestUpgradeGuest(t *testing.T) {
 	if len(snaps) != 1 || !strings.HasPrefix(snaps[0].Name, SnapshotPrefix) {
 		t.Errorf("snapshots: %v", snaps)
 	}
-	if !e.incus.FakeRunner("default/web").Ran("docker compose -p app --project-directory /root/app -f /root/app/compose.yaml up -d --remove-orphans") {
+	if !e.incus.FakeRunner("default/web").Ran("sh /root/app docker compose -p app -f /root/app/compose.yaml up -d --remove-orphans") {
 		t.Error("compose project not recreated")
 	}
 	if e.host.Ran("--force-confdef") {

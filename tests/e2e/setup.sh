@@ -3,7 +3,8 @@
 # host with an initialised Incus.
 set -euo pipefail
 
-REGISTRY="public.ecr.aws/docker/library"
+# Google's cache of Docker Hub images, more forgiving than pulling directly.
+REGISTRY="mirror.gcr.io/library"
 UBUNTU="${UBUNTU:-24.04}"
 FEDORA="${FEDORA:-43}"
 DEBIAN="${DEBIAN:-13}"
@@ -14,6 +15,17 @@ wait_for_network() {
   # shellcheck disable=SC2016 # expanded inside the guest
   incus exec "$@" -- sh -c \
     'for i in $(seq 120); do getent hosts deb.debian.org >/dev/null 2>&1 && exit 0; sleep 2; done; exit 1'
+}
+
+# retry <guest> <engine> pull <image>: registries hiccup now and then.
+pull() {
+  local guest=$1 engine=$2 image=$3
+  for i in 1 2 3 4 5; do
+    incus exec "$guest" -- "$engine" pull -q "$image" && return 0
+    echo "pull of $image failed (attempt $i), retrying"
+    sleep $((i * 5))
+  done
+  return 1
 }
 
 compose_file() {
@@ -43,12 +55,14 @@ wait_for_network alpine
 # dangling image for the cleanup.
 incus exec docker-web --env DEBIAN_FRONTEND=noninteractive -- sh -c \
   'apt-get update -q && apt-get install -y -q docker.io docker-compose-v2'
+pull docker-web docker "${REGISTRY}/busybox:1.36"
+pull docker-web docker "${REGISTRY}/alpine:3.19"
+pull docker-web docker "${REGISTRY}/alpine:3.20"
 incus exec docker-web -- sh -c "
-  docker pull -q ${REGISTRY}/busybox:1.36 &&
   docker tag ${REGISTRY}/busybox:1.36 ${REGISTRY}/busybox:latest &&
-  docker pull -q ${REGISTRY}/alpine:3.19 && docker tag ${REGISTRY}/alpine:3.19 dangling:latest &&
+  docker tag ${REGISTRY}/alpine:3.19 dangling:latest &&
   docker rmi ${REGISTRY}/alpine:3.19 &&
-  docker pull -q ${REGISTRY}/alpine:3.20 && docker tag ${REGISTRY}/alpine:3.20 dangling:latest"
+  docker tag ${REGISTRY}/alpine:3.20 dangling:latest"
 incus exec docker-web -- mkdir -p /root/app
 compose_file | incus exec docker-web -- sh -c 'cat > /root/app/compose.yaml'
 incus exec docker-web -- sh -c 'cd /root/app && docker compose up -d'
@@ -56,9 +70,8 @@ incus exec docker-web -- sh -c 'cd /root/app && docker compose up -d'
 # Fedora with podman and podman-compose (vfs storage works in any container).
 incus exec podman-fed -- dnf -y -q install podman podman-compose
 incus exec podman-fed -- sh -c 'mkdir -p /etc/containers && printf "[storage]\ndriver = \"vfs\"\n" > /etc/containers/storage.conf'
-incus exec podman-fed -- sh -c "
-  podman pull -q ${REGISTRY}/busybox:1.36 &&
-  podman tag ${REGISTRY}/busybox:1.36 ${REGISTRY}/busybox:latest"
+pull podman-fed podman "${REGISTRY}/busybox:1.36"
+incus exec podman-fed -- podman tag "${REGISTRY}/busybox:1.36" "${REGISTRY}/busybox:latest"
 incus exec podman-fed -- mkdir -p /root/app
 compose_file | incus exec podman-fed -- sh -c 'cat > /root/app/compose.yaml'
 incus exec podman-fed -- sh -c 'cd /root/app && podman-compose up -d'

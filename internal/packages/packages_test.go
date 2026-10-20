@@ -181,7 +181,7 @@ func TestNixOSChannelAndFlake(t *testing.T) {
 		On("nixos-rebuild dry-build --upgrade", runner.Result{Stderr: nixDry}).
 		On("nixos-rebuild dry-build --flake github:me/cfg#web --refresh", runner.Result{}).
 		On("/proc/sys/kernel/hostname", runner.Result{Stdout: "web\n"}).
-		On("sh -c", runner.Result{ExitCode: 1})
+		On("booted-system", runner.Result{ExitCode: 1})
 	st, err := (&NixOS{r: f}).Check(ctx)
 	if err != nil || len(st.Updates) != 5 || st.Security != -1 || st.RebootRequired {
 		t.Fatalf("channel check: %+v %v", st, err)
@@ -207,6 +207,11 @@ func TestNixOSUpgradeDetectsChange(t *testing.T) {
 	}
 	if err := n.Cleanup(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+	for _, c := range f.Calls {
+		if strings.Contains(c.String(), "nixos-rebuild") && !strings.Contains(c.String(), "/etc/set-environment") {
+			t.Errorf("nix command without the system environment: %s", c)
+		}
 	}
 }
 
