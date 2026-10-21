@@ -283,6 +283,10 @@ func (a *Agent) upgrade(ctx context.Context, d *Device, action, trigger string) 
 		report.step("restart", false, nil, "restart required; automatic restarts are off")
 		return false
 	}
+	if a.rebootExcluded(d) {
+		report.step("restart", false, nil, "restart required; the guest is excluded from reboots")
+		return false
+	}
 	report.step("restart", true, d.Provider.Restart(opCtx, *d.Guest, a.cfg.Guests.StopTimeout), "restarted because a reboot was required")
 	return false
 }

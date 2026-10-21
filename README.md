@@ -88,6 +88,9 @@ host. The full list is in [docs/entities.md](docs/entities.md).
 - **Actions**: check, upgrade (packages, containers, single containers, or
   the host and all guests), reboot or restart, restore the pre-upgrade
   snapshot, and an automatic upgrade schedule with an on/off switch.
+- **Commands**: your own shell commands as sensors or binary sensors, and
+  optionally a box to run ad-hoc commands, like LNXlink, but always as the
+  user `nobody` without privileges, so they can only read.
 - **Cleanup**: guests and containers that are removed disappear from Home
   Assistant with their entities.
 
@@ -102,7 +105,8 @@ host. The full list is in [docs/entities.md](docs/entities.md).
 | Incus / Proxmox guests | no | yes, through the platform API; nothing installed in guests |
 | Snapshots before upgrades, restore | no | yes |
 | Desktop features (media, notifications, screenshots, ...) | yes | no, it is meant for servers |
-| Arbitrary commands from Home Assistant | yes | no, by design |
+| Commands as sensors, ad-hoc commands from Home Assistant | yes, as the agent's user | yes, always as `nobody` without privileges (read-only) |
+| Reboot permissions | – | separately for the host and guests, with exclusions (e.g. all VMs) |
 
 ## Supported systems
 
@@ -181,13 +185,20 @@ The agent runs as root, so the design keeps what can reach it small:
 
 - **No listening ports.** The agent only makes outgoing connections to the
   broker, the container registries and the local Incus socket.
-- **No remote commands.** Home Assistant can only send a fixed set of words
-  (`check`, `upgrade`, `upgrade_packages`, `upgrade_containers`, `upgrade_all`,
-  `reboot`, `restore_snapshot`); anything else is rejected and logged. Nothing
-  received over MQTT ever becomes part of a command line.
-- **Permissions** decide which of those Home Assistant may use; reboots and
-  restores are off by default. Buttons for disallowed actions are not even
-  published.
+- **No privileged remote commands.** Home Assistant can only send a fixed set
+  of words (`check`, `upgrade`, `upgrade_packages`, `upgrade_containers`,
+  `upgrade_all`, `reboot`, `restore_snapshot`, ...); anything else is rejected
+  and logged. Nothing received over MQTT becomes part of a command that runs
+  as root.
+- **Commands run as `nobody`.** Configured command sensors and, when
+  `commands.allow_any` is enabled, typed commands run through `setpriv` as
+  `nobody`: no capabilities, no supplementary groups, `no_new_privs` (so
+  `sudo` and other setuid programs cannot gain privileges), a time limit and
+  an output limit. If `nobody` or `setpriv` is missing the command does not
+  run at all.
+- **Permissions** decide which actions Home Assistant may use; reboots (host
+  and guests separately, with exclusions), restores and typed commands are
+  off by default. Entities for disallowed actions are not even published.
 - **One MQTT user per host, limited by ACL.** With
   [`packaging/mosquitto/acl.conf`](packaging/mosquitto/acl.conf) each agent
   logs in with its host ID and can only publish its own devices and read its

@@ -14,7 +14,17 @@ upgrade:
   command_timeout: 30m
 permissions:
   upgrade: true
-  reboot: true
+  reboot_host: false
+  reboot_guests: true
+  reboot_exclude: [alpine]
   restore: true
   restart_containers: true
+commands:
+  allow_any: true
+  allow_any_machines: [host, guests]
+  expose:
+    - name: Whoami
+      command: id -un
+      interval: 30s
+      machines: [host, guests]
 log_level: debug

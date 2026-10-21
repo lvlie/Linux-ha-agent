@@ -92,12 +92,46 @@ nixos:
 permissions:
   # Upgrade packages, containers and single containers.
   upgrade: true
-  # Reboot the host, restart guests.
-  reboot: false
+  # Reboot the machine the agent runs on.
+  reboot_host: false
+  # Restart Incus/Proxmox guests (containers and VMs).
+  reboot_guests: false
+  # Guests that are never restarted, not from Home Assistant and not
+  # automatically after an upgrade (upgrade.restart_guests). Patterns: "name",
+  # "project/name" (Incus), the VMID (Proxmox), shell-style wildcards, or
+  # "type:vm" / "type:lxc" for all VMs or all containers.
+  reboot_exclude: []
   # Restore a guest to its pre-upgrade snapshot.
   restore: false
   # Restart single docker/podman containers.
   restart_containers: false
+
+# Shell commands whose output becomes a sensor, like LNXlink's bash module.
+# They always run as the user nobody: no capabilities, no supplementary groups
+# and no_new_privs (sudo and other setuid programs cannot gain privileges), so
+# they can read what every user may read and change nothing. The target needs
+# setpriv (util-linux, installed on nearly every distribution).
+commands:
+  # Time limit of one command. Output is limited to 64 KiB.
+  timeout: 30s
+  # A "Run command" text entity: whatever is typed runs as nobody and the
+  # output shows in a "Command output" sensor.
+  allow_any: false
+  # Machines that get it: host, guests, or guest patterns like reboot_exclude.
+  allow_any_machines: [host]
+  expose: []
+  #  - name: Failed units
+  #    command: systemctl --failed --no-legend | wc -l
+  #    type: sensor          # the first line of the output is the state
+  #    unit: units
+  #    icon: mdi:alert-circle
+  #    interval: 5m
+  #    machines: [host, guests]
+  #  - name: Backup recent
+  #    command: find /srv/backup/last -mmin -1500 | grep -q .
+  #    type: binary_sensor   # on when the command exits with 0
+  #    device_class: problem
+  #    machines: [nas]
 
 state_file: /var/lib/linux-ha-agent/state.json
 log_level: info

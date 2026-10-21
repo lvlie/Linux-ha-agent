@@ -23,7 +23,10 @@ is a device in Home Assistant. Guests are linked to their host.
 | Last check, Check error, Operating system | diagnostic sensors | |
 | Check for updates | button | |
 | Upgrade | button | Packages and containers (permission `upgrade`) |
-| Reboot / Restart | button | Host reboot or guest restart (permission `reboot`) |
+| Reboot / Restart | button | Host reboot (permission `reboot_host`) or guest restart (`reboot_guests`, unless in `reboot_exclude`) |
+| *Command name* | sensor or binary sensor | Each `commands.expose` entry for this machine; first output line, or on when it exits with 0. Output, exit code and time as attributes |
+| Run command | text | With `commands.allow_any`; runs what is typed as `nobody` |
+| Command output | sensor | First line of the last typed command; output, exit code and time as attributes |
 
 ## Machines with Docker or Podman
 
@@ -66,4 +69,5 @@ Buttons and update entities send these payloads to
 `check`, `upgrade`, `upgrade_packages`, `upgrade_containers`, `upgrade_all`
 (host only), `reboot`, `restore_snapshot` (guests only),
 `upgrade_container <key>`, `restart_container <key>` (key of a container
-found by the last check).
+found by the last check), `run_command <shell command>` (only with
+`commands.allow_any`; runs as `nobody`).

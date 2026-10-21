@@ -20,6 +20,8 @@ const (
 	// Container commands take the container key as argument: "upgrade_container docker_web".
 	CmdUpgradeContainer = "upgrade_container"
 	CmdRestartContainer = "restart_container"
+	// CmdRunCommand takes a shell command that runs as nobody: "run_command uptime".
+	CmdRunCommand = "run_command"
 )
 
 // Topics computes the MQTT topics of one agent.
@@ -95,6 +97,21 @@ type Device struct {
 	Engines bool
 	// Containers are the docker/podman containers that get their own entities.
 	Containers []Container
+	// Commands are the configured command sensors that run on this machine.
+	Commands []Command
+	// AnyCommand adds the "Run command" text entity and its output sensor.
+	AnyCommand bool
+}
+
+// Command is a command whose output is a sensor or binary sensor.
+type Command struct {
+	// Key is the entity key and the key in the state's "cmd" object.
+	Key         string
+	Name        string
+	Binary      bool
+	Unit        string
+	Icon        string
+	DeviceClass string
 }
 
 // Container is a docker/podman container with its own entities.
@@ -111,7 +128,7 @@ func ContainerKey(engine, name string) string {
 	return Slug(engine, name)
 }
 
-// Features enabled for the whole agent.
+// Features enabled for a device.
 type Features struct {
 	Upgrade           bool
 	Reboot            bool
@@ -288,6 +305,46 @@ func Payload(t Topics, o Origin, d Device, f Features, previous map[string]strin
 		if f.RestartContainers {
 			button("ctr_"+c.Key+"_restart", "Restart container "+c.Name, CmdRestartContainer+" "+c.Key, component{"device_class": "restart"})
 		}
+	}
+
+	// Commands.
+	for _, c := range d.Commands {
+		ref := "(value_json.cmd.get('" + c.Key + "') or {})"
+		cmp := component{
+			"json_attributes_topic":    state,
+			"json_attributes_template": "{{ " + ref + " | tojson }}",
+		}
+		if c.Icon != "" {
+			cmp["icon"] = c.Icon
+		}
+		if c.DeviceClass != "" {
+			cmp["device_class"] = c.DeviceClass
+		}
+		if c.Binary {
+			cmp["value_template"] = "{{ 'ON' if " + ref + ".get('exit_code') == 0 else 'OFF' }}"
+			add(c.Key, "binary_sensor", c.Name, cmp)
+			continue
+		}
+		cmp["value_template"] = "{{ " + ref + ".get('value') }}"
+		if c.Unit != "" {
+			cmp["unit_of_measurement"] = c.Unit
+		}
+		add(c.Key, "sensor", c.Name, cmp)
+	}
+	if d.AnyCommand {
+		add("run_command", "text", "Run command", component{
+			"command_topic":    cmd,
+			"command_template": CmdRunCommand + " {{ value }}",
+			"value_template":   "{{ (value_json.command or {}).get('command', '') }}",
+			"max":              255,
+			"icon":             "mdi:console",
+		})
+		add("command_output", "sensor", "Command output", component{
+			"value_template":           "{{ (value_json.command or {}).get('value') }}",
+			"icon":                     "mdi:console-line",
+			"json_attributes_topic":    state,
+			"json_attributes_template": "{{ (value_json.command or {}) | tojson }}",
+		})
 	}
 
 	// Actions.

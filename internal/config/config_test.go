@@ -34,7 +34,7 @@ permissions:
 	if cfg.Guests.SnapshotKeep != 72*time.Hour || cfg.Checks.Interval != 30*time.Minute {
 		t.Errorf("durations not parsed: %v %v", cfg.Guests.SnapshotKeep, cfg.Checks.Interval)
 	}
-	if !cfg.Permissions.Upgrade || !cfg.Permissions.Reboot || cfg.Permissions.Restore {
+	if !cfg.Permissions.Upgrade || !cfg.Permissions.RebootHost || !cfg.Permissions.RebootGuests || len(cfg.Warnings) != 1 || cfg.Permissions.Restore {
 		t.Errorf("permissions wrong: %+v", cfg.Permissions)
 	}
 	if !cfg.Host.Manage || cfg.Incus.Enabled != "auto" || !cfg.Guests.Snapshot || cfg.Proxmox.Enabled != "auto" ||
@@ -120,9 +120,93 @@ func TestGuestSelection(t *testing.T) {
 		{"", "media", "105", "container", false},
 	}
 	for _, c := range cases {
-		got := g.Includes(c.typ) && !g.Excluded(c.project, c.name, c.id) && (c.project == "" || i.InProject(c.project))
+		got := g.Includes(c.typ) && !g.Excluded(GuestRef{Project: c.project, Name: c.name, ID: c.id}) && (c.project == "" || i.InProject(c.project))
 		if got != c.want {
 			t.Errorf("%s/%s/%s (%s): got %v want %v", c.project, c.name, c.id, c.typ, got, c.want)
+		}
+	}
+}
+
+func TestRebootPermissions(t *testing.T) {
+	cfg, err := Parse([]byte(`
+mqtt: {url: tcp://b:1883}
+permissions:
+  reboot_guests: true
+  reboot_exclude: [type:vm, "db-*", lab/critical]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := cfg.Permissions
+	if p.RebootHost || !p.RebootGuests || len(cfg.Warnings) != 0 {
+		t.Fatalf("%+v %v", p, cfg.Warnings)
+	}
+	for ref, want := range map[GuestRef]bool{
+		{Name: "web", Type: "container"}:                        false,
+		{Name: "win", Type: "virtual-machine"}:                  true,
+		{Name: "db-1", Type: "container"}:                       true,
+		{Project: "lab", Name: "critical", Type: "container"}:   true,
+		{Project: "other", Name: "critical", Type: "container"}: false,
+	} {
+		if got := ref.Matches(p.RebootExclude); got != want {
+			t.Errorf("%+v: excluded %v, want %v", ref, got, want)
+		}
+	}
+	_, err = Parse([]byte("mqtt: {url: tcp://b:1883}\npermissions: {reboot_exclude: [\"type:pod\", \"[\"]}\n"))
+	if err == nil || !strings.Contains(err.Error(), "unknown guest type") || !strings.Contains(err.Error(), "bad pattern") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestCommands(t *testing.T) {
+	cfg, err := Parse([]byte(`
+mqtt: {url: tcp://b:1883}
+commands:
+  allow_any: true
+  expose:
+    - name: Failed units
+      command: systemctl --failed --no-legend | wc -l
+    - name: Backup ok
+      command: test -f /backup/ok
+      type: binary_sensor
+      interval: 1h
+      machines: [guests]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := cfg.Commands
+	if c.Timeout != 30*time.Second || !c.AllowAny || len(c.AllowAnyMachines) != 1 || c.AllowAnyMachines[0] != "host" {
+		t.Errorf("defaults: %+v", c)
+	}
+	first, second := c.Expose[0], c.Expose[1]
+	if first.Key() != "cmd_failed_units" || first.Type != "sensor" || first.Interval != 5*time.Minute || len(first.Machines) != 1 {
+		t.Errorf("first: %+v", first)
+	}
+	vm := GuestRef{Name: "x", Type: "virtual-machine"}
+	if !RunsOn(first.Machines, nil) || RunsOn(first.Machines, &vm) || RunsOn(second.Machines, nil) || !RunsOn(second.Machines, &vm) {
+		t.Error("machines")
+	}
+
+	_, err = Parse([]byte(`
+mqtt: {url: tcp://b:1883}
+commands:
+  timeout: 1h
+  allow_any_machines: ["type:pod"]
+  expose:
+    - name: A
+      command: x
+    - name: a
+      command: ""
+      type: switch
+      interval: 1s
+`))
+	if err == nil {
+		t.Fatal("expected errors")
+	}
+	for _, want := range []string{"commands.timeout", "allow_any_machines", "used twice", "command is required", "type must be", "interval must be"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("missing %q in %v", want, err)
 		}
 	}
 }
