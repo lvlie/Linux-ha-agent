@@ -123,6 +123,11 @@ func saveState(path string, st persisted) error {
 		_ = tmp.Close()
 		return err
 	}
+	// Without the sync, a crash after the rename can leave an empty file.
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
 	if err := tmp.Close(); err != nil {
 		return err
 	}

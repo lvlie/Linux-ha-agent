@@ -34,6 +34,13 @@ contents:
     file_info:
       mode: 0644
 
+  # Matches ConfigurationDirectoryMode in the unit; without it the directory
+  # is created 0755 and systemd warns on every start.
+  - dst: /etc/linux-ha-agent
+    type: dir
+    file_info:
+      mode: 0750
+
   # Never overwritten on upgrades.
   - src: config.example.yaml
     dst: /etc/linux-ha-agent/config.yaml
