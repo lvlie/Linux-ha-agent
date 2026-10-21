@@ -175,6 +175,14 @@ jobs:
           # For pull requests GITHUB_SHA is a merge commit that only exists on GitHub.
           COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
           GOPROXY: direct
+          # Newer git runs auto-maintenance detached after a fetch; it then
+          # races with Go's next fetch in the same repository ("shallow file
+          # has changed since we read it").
+          GIT_CONFIG_COUNT: "2"
+          GIT_CONFIG_KEY_0: maintenance.auto
+          GIT_CONFIG_VALUE_0: "false"
+          GIT_CONFIG_KEY_1: gc.auto
+          GIT_CONFIG_VALUE_1: "0"
         run: |
           cd "$(mktemp -d)"
           go install "github.com/lvlie/linux-ha-agent/cmd/linux-ha-agent@${COMMIT}"
