@@ -205,8 +205,15 @@ func TestPahoWithPasswordAndWill(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatal("client did not reconnect to the restarted broker")
 	}
+	// The watcher was disconnected too and reconnects with backoff; a new
+	// client does not depend on that timing.
+	sender, err := Connect(context.Background(), config.MQTT{URL: "tcp://" + b.addr, Username: "watcher", PasswordFile: writeTemp(t, "w")}, Options{ClientID: "sender"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sender.Disconnect()
 	waitFor(t, "command after reconnect", func() bool {
-		_ = watcher.Publish("agent/cmd", false, []byte("check"))
+		_ = sender.Publish("agent/cmd", false, []byte("check"))
 		select {
 		case p := <-got:
 			return p == "check"

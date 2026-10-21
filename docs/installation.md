@@ -115,7 +115,10 @@ The most important settings:
 | `guests.snapshot_before_upgrade` | `true` | Snapshot guests before upgrading |
 | `guests.exclude` | none | Guests to leave alone: `name`, `project/name` (Incus), VMID (Proxmox), wildcards |
 | `incus.enabled` / `proxmox.enabled` | `auto` | Manage Incus or Proxmox VE guests when found |
-| `permissions.upgrade` / `reboot` / `restore` | `true` / `false` / `false` | What Home Assistant may trigger |
+| `permissions.upgrade` / `restore` / `restart_containers` | `true` / `false` / `false` | What Home Assistant may trigger |
+| `permissions.reboot_host` / `reboot_guests` | `false` / `false` | Reboot buttons for the host and for guests |
+| `permissions.reboot_exclude` | none | Guests never restarted (also not after upgrades): names, `project/name`, VMIDs, wildcards, `type:vm`, `type:lxc` |
+| `commands.expose` / `commands.allow_any` | none / `false` | Command sensors and ad-hoc commands, run as `nobody` |
 | `checks.interval` | `6h` | How often to look for updates |
 
 Next: [connect it to Home Assistant](home-assistant.md).

@@ -183,7 +183,7 @@ func newEnvWith(t *testing.T, mutate func(*config.Config), before func(*env)) *e
 	cfg.MQTT.URL = "tcp://broker:1883"
 	cfg.StateFile = filepath.Join(t.TempDir(), "state.json")
 	cfg.Guests.Exclude = []string{"build-*"}
-	cfg.Permissions = config.Permissions{Upgrade: true, Reboot: true, Restore: true}
+	cfg.Permissions = config.Permissions{Upgrade: true, RebootHost: true, RebootGuests: true, Restore: true}
 	if mutate != nil {
 		mutate(&cfg)
 	}
@@ -438,7 +438,7 @@ func TestUnsupportedOSIsNotAFailure(t *testing.T) {
 
 func TestPermissions(t *testing.T) {
 	e := newEnv(t, func(c *config.Config) {
-		c.Permissions = config.Permissions{Upgrade: false, Reboot: false, Restore: false}
+		c.Permissions = config.Permissions{}
 	})
 	e.command("lab1_web", ha.CmdUpgrade)
 	e.command("lab1_web", ha.CmdReboot)

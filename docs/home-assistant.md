@@ -96,12 +96,42 @@ restore snapshots or restart containers. Enable those per machine:
 ```yaml
 permissions:
   upgrade: true
-  reboot: true
+  reboot_host: false          # the machine the agent runs on
+  reboot_guests: true         # Incus/Proxmox containers and VMs...
+  reboot_exclude:             # ...except these
+    - type:vm                 # all VMs (type:lxc: all containers)
+    - db-*                    # names, project/name or VMIDs, with wildcards
   restore: true
   restart_containers: true
 ```
 
+Excluded guests are not restarted after upgrades either
+(`upgrade.restart_guests`); their *Reboot required* sensor stays on instead.
 Buttons for actions that are not permitted are not created at all.
+
+## 6. Commands (optional)
+
+Like LNXlink's bash module, shell commands can become sensors. They always
+run as the user `nobody` without any privileges, so they can only read what
+every user may read:
+
+```yaml
+commands:
+  expose:
+    - name: Failed units
+      command: systemctl --failed --no-legend | wc -l
+      unit: units
+      interval: 5m
+      machines: [host, guests]   # or guest names/patterns, type:vm, type:lxc
+    - name: Nightly backup
+      command: find /srv/backup/last -mmin -1500 | grep -q .
+      type: binary_sensor        # on when the command exits with 0
+  allow_any: true                # a "Run command" box for ad-hoc commands
+  allow_any_machines: [host]
+```
+
+A sensor shows the first line of the output; the full output, exit code and
+time are its attributes.
 
 ## Dashboard
 

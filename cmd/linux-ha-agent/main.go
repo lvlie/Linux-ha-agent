@@ -67,6 +67,9 @@ func run() error {
 		return err
 	}
 	if *checkConfig {
+		for _, w := range cfg.Warnings {
+			fmt.Println("warning:", w)
+		}
 		fmt.Println("configuration is valid")
 		return nil
 	}
@@ -77,6 +80,9 @@ func run() error {
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 	slog.SetDefault(log)
+	for _, w := range cfg.Warnings {
+		log.Warn(w)
+	}
 
 	hostname, err := os.Hostname()
 	if err != nil {

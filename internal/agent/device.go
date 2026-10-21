@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lvlie/linux-ha-agent/internal/commands"
 	"github.com/lvlie/linux-ha-agent/internal/containers"
 	"github.com/lvlie/linux-ha-agent/internal/guest"
 	"github.com/lvlie/linux-ha-agent/internal/ha"
@@ -36,6 +37,22 @@ type Device struct {
 	// lastChecked is the discovery input from the last check, persisted
 	// across restarts; used until the device is checked again.
 	lastChecked *ha.Device
+	// commands are the latest results of the configured commands by key.
+	commands map[string]commands.Result
+	// commandsRun is when each configured command last ran.
+	commandsRun map[string]time.Time
+	// lastCommand is the result of the last command typed in Home Assistant.
+	lastCommand *commands.Result
+	// commandRunning is set while a typed command runs.
+	commandRunning bool
+}
+
+// commandState renders a command result for the state.
+func commandState(r commands.Result) map[string]any {
+	return map[string]any{
+		"command": r.Command, "value": r.Value(), "output": r.Output,
+		"exit_code": r.ExitCode, "time": r.Time.Format(time.RFC3339), "error": r.Error,
+	}
 }
 
 // sharedKernel reports whether the device runs its host's kernel.
@@ -224,6 +241,15 @@ func (d *Device) state(extra map[string]any) map[string]any {
 		"temperature":        nil,
 		"platform":           nil,
 		"ctr":                d.containerStates(),
+		"cmd":                map[string]any{},
+		"command":            nil,
+	}
+	cmds := st["cmd"].(map[string]any)
+	for key, r := range d.commands {
+		cmds[key] = commandState(r)
+	}
+	if d.lastCommand != nil {
+		st["command"] = commandState(*d.lastCommand)
 	}
 	if d.Guest != nil {
 		st["platform"] = guestKind(*d.Guest)

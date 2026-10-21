@@ -255,6 +255,50 @@ func TestE2E(t *testing.T) {
 		}
 	})
 
+	t.Run("reboot permissions", func(t *testing.T) {
+		for d, want := range map[string]bool{hostID: false, device("docker_web"): true, device("alpine"): false} {
+			if _, ok := b.discovery(d)["reboot"]; ok != want {
+				t.Errorf("%s: reboot button %v, want %v", d, ok, want)
+			}
+		}
+	})
+
+	t.Run("commands run as nobody", func(t *testing.T) {
+		whoami := func(d string) map[string]any {
+			v, _ := b.state(d)["cmd"].(map[string]any)["cmd_whoami"].(map[string]any)
+			return v
+		}
+		// util-linux setpriv (Ubuntu, Debian) and BusyBox (Alpine) must both work;
+		// the Fedora image must at least never run it as root.
+		for _, d := range []string{hostID, device("docker_web"), device("lab_deb"), device("alpine")} {
+			eventually(t, 5*time.Minute, "whoami on "+d, func() bool { return whoami(d) != nil })
+			if v := whoami(d); v["value"] != "nobody" {
+				t.Errorf("%s: %v", d, v)
+			}
+		}
+		for _, d := range []string{device("podman_fed")} {
+			eventually(t, 5*time.Minute, "whoami on "+d, func() bool { return whoami(d) != nil })
+			if v := whoami(d); v["value"] == "root" || (v["value"] != "nobody" && v["error"] == "") {
+				t.Errorf("%s: %v", d, v)
+			}
+		}
+		if cmps := b.discovery(device("docker_web")); cmps["run_command"]["p"] != "text" || cmps["cmd_whoami"]["p"] != "sensor" {
+			t.Fatalf("command entities missing: %v %v", cmps["run_command"], cmps["cmd_whoami"])
+		}
+		b.command(t, device("docker_web"), "run_command touch /root/pwned; cat /etc/shadow")
+		eventually(t, 2*time.Minute, "typed command result", func() bool {
+			c, _ := b.state(device("docker_web"))["command"].(map[string]any)
+			return c != nil
+		})
+		c := b.state(device("docker_web"))["command"].(map[string]any)
+		if c["exit_code"] == 0.0 || !strings.Contains(c["output"].(string), "Permission denied") {
+			t.Errorf("unprivileged command: %v", c)
+		}
+		if _, err := exec.Command("incus", "exec", "docker-web", "--", "test", "-e", "/root/pwned").CombinedOutput(); err == nil {
+			t.Error("a typed command wrote to /root")
+		}
+	})
+
 	webCtr := "docker_app_sleeper_1"
 	t.Run("container entities", func(t *testing.T) {
 		cmps := b.discovery(device("docker_web"))

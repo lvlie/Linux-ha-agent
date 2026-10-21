@@ -29,8 +29,11 @@ type Config struct {
 	Upgrade       Upgrade       `yaml:"upgrade"`
 	NixOS         NixOS         `yaml:"nixos"`
 	Permissions   Permissions   `yaml:"permissions"`
+	Commands      Commands      `yaml:"commands"`
 	StateFile     string        `yaml:"state_file"`
 	LogLevel      string        `yaml:"log_level"`
+	// Warnings are about deprecated settings; they do not stop the agent.
+	Warnings []string `yaml:"-"`
 }
 
 // MQTT connection settings.
@@ -121,10 +124,127 @@ type NixOS struct {
 
 // Permissions decide which actions Home Assistant may trigger.
 type Permissions struct {
-	Upgrade           bool `yaml:"upgrade"`
-	Reboot            bool `yaml:"reboot"`
-	Restore           bool `yaml:"restore"`
-	RestartContainers bool `yaml:"restart_containers"`
+	Upgrade bool `yaml:"upgrade"`
+	// Reboot is deprecated: it enables both RebootHost and RebootGuests.
+	Reboot       bool `yaml:"reboot"`
+	RebootHost   bool `yaml:"reboot_host"`
+	RebootGuests bool `yaml:"reboot_guests"`
+	// RebootExclude are guests that are never rebooted, even with
+	// RebootGuests or upgrade.restart_guests; see MatchGuest for the patterns.
+	RebootExclude     []string `yaml:"reboot_exclude"`
+	Restore           bool     `yaml:"restore"`
+	RestartContainers bool     `yaml:"restart_containers"`
+}
+
+// Commands are shell commands whose output is published, like LNXlink's
+// bash module. They always run as the user nobody, without privileges.
+type Commands struct {
+	// Timeout of one command.
+	Timeout time.Duration `yaml:"timeout"`
+	// AllowAny adds a text entity to every machine that runs whatever is
+	// typed into it (as nobody) and shows the output in a sensor.
+	AllowAny bool `yaml:"allow_any"`
+	// Machines that get the "Run command" entity: see Command.Machines.
+	AllowAnyMachines []string  `yaml:"allow_any_machines"`
+	Expose           []Command `yaml:"expose"`
+}
+
+// Command is a command published as a sensor.
+type Command struct {
+	Name    string `yaml:"name"`
+	Command string `yaml:"command"`
+	// Type is sensor (the output is the state) or binary_sensor (on when the
+	// command exits with 0).
+	Type        string        `yaml:"type"`
+	Unit        string        `yaml:"unit"`
+	Icon        string        `yaml:"icon"`
+	DeviceClass string        `yaml:"device_class"`
+	Interval    time.Duration `yaml:"interval"`
+	// Machines to run it on: "host", "guests" (all guests) or guest patterns
+	// (see MatchGuest). Defaults to the host.
+	Machines []string `yaml:"machines"`
+}
+
+// Key identifies the command in entity IDs and the state.
+func (c Command) Key() string {
+	return "cmd_" + slug(c.Name)
+}
+
+var nonSlug = regexp.MustCompile(`[^a-z0-9_]+`)
+
+func slug(s string) string {
+	return strings.Trim(nonSlug.ReplaceAllString(strings.ToLower(s), "_"), "_")
+}
+
+// RunsOn reports whether a command with these machines runs on the host
+// (guest nil) or on a guest.
+func RunsOn(machines []string, g *GuestRef) bool {
+	if g == nil {
+		return slices.Contains(machines, "host")
+	}
+	if slices.Contains(machines, "guests") {
+		return true
+	}
+	return g.Matches(machines)
+}
+
+// GuestRef describes a guest for pattern matching.
+type GuestRef struct {
+	Project, Name, ID string
+	// Type is "container" or "virtual-machine".
+	Type string
+}
+
+// Matches reports whether the guest matches one of the patterns. A pattern
+// is "type:container" (alias "type:lxc"), "type:virtual-machine" (alias
+// "type:vm"), or a shell-style wildcard matched against the name,
+// "project/name" (Incus) and the VMID (Proxmox).
+func (g GuestRef) Matches(patterns []string) bool {
+	candidates := []string{g.Name}
+	if g.Project != "" {
+		candidates = append(candidates, g.Project+"/"+g.Name)
+	}
+	if g.ID != "" {
+		candidates = append(candidates, g.ID)
+	}
+	for _, pattern := range patterns {
+		if t, ok := strings.CutPrefix(pattern, "type:"); ok {
+			if guestTypes[t] == g.Type {
+				return true
+			}
+			continue
+		}
+		for _, candidate := range candidates {
+			if ok, _ := path.Match(pattern, candidate); ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+var guestTypes = map[string]string{
+	"container": "container", "lxc": "container",
+	"virtual-machine": "virtual-machine", "vm": "virtual-machine",
+}
+
+func validatePatterns(field string, patterns []string, keywords ...string) []error {
+	var errs []error
+	for _, pattern := range patterns {
+		if slices.Contains(keywords, pattern) {
+			continue
+		}
+		if t, ok := strings.CutPrefix(pattern, "type:"); ok {
+			if guestTypes[t] == "" {
+				errs = append(errs, fmt.Errorf("%s: unknown guest type in %q (container, lxc, virtual-machine or vm)", field, pattern))
+			}
+			continue
+		}
+		if _, err := path.Match(pattern, ""); err != nil {
+			errs = append(errs, fmt.Errorf("%s: bad pattern %q: %w", field, pattern, err))
+		}
+	}
+	return errs
 }
 
 // Default returns the configuration with all defaults applied.
@@ -150,6 +270,7 @@ func Default() Config {
 		},
 		NixOS:       NixOS{GCOlderThan: "14d"},
 		Permissions: Permissions{Upgrade: true},
+		Commands:    Commands{Timeout: 30 * time.Second, AllowAnyMachines: []string{"host"}},
 		StateFile:   "/var/lib/linux-ha-agent/state.json",
 		LogLevel:    "info",
 	}
@@ -173,10 +294,57 @@ func Parse(data []byte) (Config, error) {
 	if err := dec.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
 		return Config{}, fmt.Errorf("parsing config: %w", err)
 	}
+	if cfg.Permissions.Reboot {
+		cfg.Permissions.RebootHost = true
+		cfg.Permissions.RebootGuests = true
+		cfg.Warnings = append(cfg.Warnings, "permissions.reboot is deprecated: use permissions.reboot_host and permissions.reboot_guests")
+	}
+	for i := range cfg.Commands.Expose {
+		c := &cfg.Commands.Expose[i]
+		if c.Type == "" {
+			c.Type = "sensor"
+		}
+		if c.Interval == 0 {
+			c.Interval = 5 * time.Minute
+		}
+		if c.Machines == nil {
+			c.Machines = []string{"host"}
+		}
+	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+func (c Commands) validate() []error {
+	var errs []error
+	if c.Timeout < time.Second || c.Timeout > 10*time.Minute {
+		errs = append(errs, errors.New("commands.timeout must be between 1s and 10m"))
+	}
+	errs = append(errs, validatePatterns("commands.allow_any_machines", c.AllowAnyMachines, "host", "guests")...)
+	keys := map[string]bool{}
+	for i, cmd := range c.Expose {
+		field := fmt.Sprintf("commands.expose[%d]", i)
+		switch {
+		case slug(cmd.Name) == "":
+			errs = append(errs, fmt.Errorf("%s: name is required", field))
+		case keys[cmd.Key()]:
+			errs = append(errs, fmt.Errorf("%s: name %q is used twice", field, cmd.Name))
+		}
+		keys[cmd.Key()] = true
+		if strings.TrimSpace(cmd.Command) == "" {
+			errs = append(errs, fmt.Errorf("%s: command is required", field))
+		}
+		if cmd.Type != "sensor" && cmd.Type != "binary_sensor" {
+			errs = append(errs, fmt.Errorf("%s: type must be sensor or binary_sensor, not %q", field, cmd.Type))
+		}
+		if cmd.Interval < 10*time.Second {
+			errs = append(errs, fmt.Errorf("%s: interval must be at least 10s", field))
+		}
+		errs = append(errs, validatePatterns(field+".machines", cmd.Machines, "host", "guests")...)
+	}
+	return errs
 }
 
 var (
@@ -218,11 +386,9 @@ func (c *Config) Validate() error {
 			errs = append(errs, fmt.Errorf("guests.types: unknown type %q", t))
 		}
 	}
-	for _, pattern := range c.Guests.Exclude {
-		if _, err := path.Match(pattern, ""); err != nil {
-			errs = append(errs, fmt.Errorf("guests.exclude: bad pattern %q: %w", pattern, err))
-		}
-	}
+	errs = append(errs, validatePatterns("guests.exclude", c.Guests.Exclude)...)
+	errs = append(errs, validatePatterns("permissions.reboot_exclude", c.Permissions.RebootExclude)...)
+	errs = append(errs, c.Commands.validate()...)
 	if c.Checks.Interval < time.Minute {
 		errs = append(errs, errors.New("checks.interval must be at least 1m"))
 	}
@@ -265,23 +431,8 @@ func (m MQTT) Password() (string, error) {
 }
 
 // Excluded reports whether a guest matches one of the exclude patterns.
-// Patterns match the name, "project/name" (Incus) or the VMID (Proxmox).
-func (g Guests) Excluded(project, name, id string) bool {
-	candidates := []string{name}
-	if project != "" {
-		candidates = append(candidates, project+"/"+name)
-	}
-	if id != "" {
-		candidates = append(candidates, id)
-	}
-	for _, pattern := range g.Exclude {
-		for _, candidate := range candidates {
-			if ok, _ := path.Match(pattern, candidate); ok {
-				return true
-			}
-		}
-	}
-	return false
+func (g Guests) Excluded(ref GuestRef) bool {
+	return ref.Matches(g.Exclude)
 }
 
 // Includes reports whether guests of this type are managed.

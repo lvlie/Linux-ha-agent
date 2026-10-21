@@ -163,15 +163,30 @@ func (a *Agent) autoUpgrade() bool {
 	return a.cfg.Upgrade.AutoUpgrade
 }
 
-func (a *Agent) features() ha.Features {
+// features are the actions Home Assistant may trigger on a device.
+func (a *Agent) features(d *Device) ha.Features {
+	p := a.cfg.Permissions
+	reboot := p.RebootHost
+	if !d.Host {
+		reboot = p.RebootGuests && !a.rebootExcluded(d)
+	}
 	return ha.Features{
-		Upgrade:  a.cfg.Permissions.Upgrade,
-		Reboot:   a.cfg.Permissions.Reboot,
-		Restore:  a.cfg.Permissions.Restore && a.cfg.Guests.Snapshot && len(a.providers) > 0,
+		Upgrade:  p.Upgrade,
+		Reboot:   reboot,
+		Restore:  p.Restore && a.cfg.Guests.Snapshot && len(a.providers) > 0,
 		Schedule: a.schedule != nil,
 
-		RestartContainers: a.cfg.Permissions.RestartContainers,
+		RestartContainers: p.RestartContainers,
 	}
+}
+
+// rebootExcluded reports whether a guest must never be rebooted.
+func (a *Agent) rebootExcluded(d *Device) bool {
+	return d.Guest != nil && guestRef(*d.Guest).Matches(a.cfg.Permissions.RebootExclude)
+}
+
+func guestRef(g guest.Guest) config.GuestRef {
+	return config.GuestRef{Project: g.Project, Name: g.Name, ID: g.ID, Type: g.Type}
 }
 
 // Start subscribes, publishes the initial state and starts the worker. It
@@ -235,6 +250,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 	for _, p := range a.providers {
 		go a.watchGuests(ctx, p)
+	}
+	if len(a.cfg.Commands.Expose) > 0 {
+		go a.commandLoop(ctx)
 	}
 	for {
 		select {
@@ -391,6 +409,7 @@ func (a *Agent) handleCommand(topic string, payload []byte) {
 	}
 	deviceID := parts[len(parts)-2]
 	cmd, arg, _ := strings.Cut(strings.TrimSpace(string(payload)), " ")
+	arg = strings.TrimSpace(arg)
 	d := a.device(deviceID)
 	log := a.log.With("device", deviceID, "command", cmd, "arg", arg)
 	if d == nil {
@@ -401,16 +420,29 @@ func (a *Agent) handleCommand(topic string, payload []byte) {
 		log.Warn("command rejected", "reason", err)
 		return
 	}
+	if cmd == ha.CmdRunCommand {
+		// Read-only and unprivileged: runs next to operations, not after them.
+		a.runAnyCommand(d, arg, log)
+		return
+	}
 	log.Info("command accepted")
 	a.enqueue(op{kind: cmd, device: d.ID, arg: arg, trigger: "home assistant"})
 }
 
 func (a *Agent) allowed(d *Device, cmd, arg string) error {
 	p := a.cfg.Permissions
-	if arg != "" && cmd != ha.CmdUpgradeContainer && cmd != ha.CmdRestartContainer {
+	if arg != "" && cmd != ha.CmdUpgradeContainer && cmd != ha.CmdRestartContainer && cmd != ha.CmdRunCommand {
 		return fmt.Errorf("%s takes no argument", cmd)
 	}
 	switch cmd {
+	case ha.CmdRunCommand:
+		if !a.anyCommand(d) {
+			return errors.New("running commands is not permitted")
+		}
+		if arg == "" || len(arg) > 255 {
+			return errors.New("the command must be 1 to 255 characters")
+		}
+		return nil
 	case ha.CmdUpgradeContainer, ha.CmdRestartContainer:
 		if cmd == ha.CmdUpgradeContainer && !p.Upgrade {
 			return errors.New("upgrades are not permitted")
@@ -442,11 +474,16 @@ func (a *Agent) allowed(d *Device, cmd, arg string) error {
 			return errors.New("upgrade_all is only available on the host")
 		}
 	case ha.CmdReboot:
-		if !p.Reboot {
-			return errors.New("reboots are not permitted")
+		switch {
+		case d.Host && !p.RebootHost:
+			return errors.New("rebooting the host is not permitted")
+		case !d.Host && !p.RebootGuests:
+			return errors.New("rebooting guests is not permitted")
+		case a.rebootExcluded(d):
+			return errors.New("this guest is excluded from reboots")
 		}
 	case ha.CmdRestore:
-		if !a.features().Restore {
+		if !a.features(d).Restore {
 			return errors.New("snapshot restores are not permitted")
 		}
 		if d.Guest == nil {
@@ -505,7 +542,9 @@ func (a *Agent) PublishAll(force bool) {
 func (a *Agent) publish(d *Device, forceDiscovery bool) {
 	a.mu.Lock()
 	origin := ha.Origin{Name: "linux-ha-agent", Version: a.version, URL: ProjectURL}
-	payload, components, err := ha.Payload(a.topics, origin, d.haDevice(a.topics.HostID, a.cfg.Checks.ContainerEntities), a.features(), d.components)
+	dev := d.haDevice(a.topics.HostID, a.cfg.Checks.ContainerEntities)
+	dev.Commands, dev.AnyCommand = a.commandEntities(d), a.anyCommand(d)
+	payload, components, err := ha.Payload(a.topics, origin, dev, a.features(d), d.components)
 	sendDiscovery := err == nil && (forceDiscovery || string(payload) != d.discovery)
 	componentsChanged := false
 	if sendDiscovery {
@@ -602,7 +641,7 @@ func (a *Agent) setOperation(d *Device, operation string) {
 }
 
 func (a *Agent) managed(g guest.Guest) bool {
-	if !a.cfg.Guests.Includes(g.Type) || a.cfg.Guests.Excluded(g.Project, g.Name, g.ID) {
+	if !a.cfg.Guests.Includes(g.Type) || a.cfg.Guests.Excluded(guestRef(g)) {
 		return false
 	}
 	return g.Platform != "incus" || a.cfg.Incus.InProject(g.Project)
