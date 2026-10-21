@@ -19,6 +19,9 @@ func TestValue(t *testing.T) {
 		"  first \nsecond\n":     "first",
 		"":                       "",
 		strings.Repeat("x", 300): strings.Repeat("x", 252) + "...",
+		// Characters, not bytes, and never half a character.
+		strings.Repeat("é", 255): strings.Repeat("é", 255),
+		strings.Repeat("é", 256): strings.Repeat("é", 252) + "...",
 	} {
 		if got := (Result{Output: out}).Value(); got != want {
 			t.Errorf("Value(%q) = %q", out, got)

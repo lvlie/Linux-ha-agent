@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/lvlie/linux-ha-agent/internal/runner"
 )
@@ -76,8 +77,8 @@ type Result struct {
 func (r Result) Value() string {
 	v, _, _ := strings.Cut(strings.TrimSpace(r.Output), "\n")
 	v = strings.TrimSpace(v)
-	if len(v) > 255 {
-		v = v[:252] + "..."
+	if utf8.RuneCountInString(v) > 255 {
+		v = string([]rune(v)[:252]) + "..."
 	}
 	return v
 }

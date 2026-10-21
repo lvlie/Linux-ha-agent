@@ -22,6 +22,7 @@ linux-ha-agent -version
 linux-ha-agent -config "$CONF" -check-config
 test -f /usr/lib/systemd/system/linux-ha-agent.service
 test "$(stat -c %a "$CONF")" = 640
+test "$(stat -c %a /etc/linux-ha-agent)" = 750
 test "$(stat -c %a /var/lib/linux-ha-agent)" = 700
 
 echo "== reinstall keeps a changed configuration"
