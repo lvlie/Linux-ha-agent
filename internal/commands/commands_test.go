@@ -37,6 +37,48 @@ func TestSetupErrorIsReported(t *testing.T) {
 	}
 }
 
+// TestBusyBoxHere runs the wrapper with only BusyBox tools, like on Alpine,
+// whose setpriv cannot change the user itself.
+func TestBusyBoxHere(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root")
+	}
+	busybox, err := exec.LookPath("busybox")
+	if err != nil {
+		t.Skip("no busybox")
+	}
+	dir, err := os.MkdirTemp("", "busybox")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, applet := range []string{"sh", "id", "setpriv", "su", "setsid", "kill", "head", "cat", "grep", "sleep"} {
+		if err := os.Symlink(busybox, dir+"/"+applet); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := busyboxRunner{dir: dir}
+	res := Run(context.Background(), r, "id -un; grep -E '^(CapEff|NoNewPrivs)' /proc/self/status", 10*time.Second, now)
+	if res.ExitCode != 0 || !strings.HasPrefix(res.Output, "nobody\n") || !strings.Contains(res.Output, "CapEff:\t0000000000000000") ||
+		!strings.Contains(res.Output, "NoNewPrivs:\t1") {
+		t.Errorf("privileges not dropped: %+v", res)
+	}
+	start := time.Now()
+	if res := Run(context.Background(), r, "sleep 30; echo never", time.Second, now); !strings.Contains(res.Error, "timed out") || time.Since(start) > 10*time.Second {
+		t.Errorf("timeout: %+v after %v", res, time.Since(start))
+	}
+}
+
+// busyboxRunner runs commands with only the BusyBox applets in dir.
+type busyboxRunner struct{ dir string }
+
+func (b busyboxRunner) Run(ctx context.Context, cmd runner.Cmd) (runner.Result, error) {
+	return runner.Local{}.Run(ctx, cmd.WithEnv("PATH", b.dir))
+}
+
 // TestUnprivilegedHere runs the real wrapper; it needs root and setpriv.
 func TestUnprivilegedHere(t *testing.T) {
 	if os.Geteuid() != 0 {
@@ -66,6 +108,14 @@ func TestUnprivilegedHere(t *testing.T) {
 	}
 	if r := run("sleep 30", time.Second); r.Error == "" || !strings.Contains(r.Error, "timed out") {
 		t.Errorf("timeout: %+v", r)
+	}
+	// Processes left behind are killed and do not hold the output open.
+	start := time.Now()
+	if r := run("sleep 30 & echo started", 10*time.Second); r.Output != "started\n" || time.Since(start) > 5*time.Second {
+		t.Errorf("background process: %+v after %v", r, time.Since(start))
+	}
+	if r := run("sleep 30; echo never", time.Second); !strings.Contains(r.Error, "timed out") || time.Since(start) > 15*time.Second {
+		t.Errorf("timeout of a command with children: %+v", r)
 	}
 	if r := run("yes", 10*time.Second); len(r.Output) != OutputLimit || r.Error == "" {
 		t.Errorf("output limit: %d bytes, %q", len(r.Output), r.Error)

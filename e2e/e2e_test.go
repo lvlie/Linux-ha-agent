@@ -268,14 +268,15 @@ func TestE2E(t *testing.T) {
 			v, _ := b.state(d)["cmd"].(map[string]any)["cmd_whoami"].(map[string]any)
 			return v
 		}
-		// Ubuntu and Debian have setpriv; other guests must at least never run it as root.
-		for _, d := range []string{hostID, device("docker_web"), device("lab_deb")} {
+		// util-linux setpriv (Ubuntu, Debian) and BusyBox (Alpine) must both work;
+		// the Fedora image must at least never run it as root.
+		for _, d := range []string{hostID, device("docker_web"), device("lab_deb"), device("alpine")} {
 			eventually(t, 5*time.Minute, "whoami on "+d, func() bool { return whoami(d) != nil })
 			if v := whoami(d); v["value"] != "nobody" {
 				t.Errorf("%s: %v", d, v)
 			}
 		}
-		for _, d := range []string{device("podman_fed"), device("alpine")} {
+		for _, d := range []string{device("podman_fed")} {
 			eventually(t, 5*time.Minute, "whoami on "+d, func() bool { return whoami(d) != nil })
 			if v := whoami(d); v["value"] == "root" || (v["value"] != "nobody" && v["error"] == "") {
 				t.Errorf("%s: %v", d, v)

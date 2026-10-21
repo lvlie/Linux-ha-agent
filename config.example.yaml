@@ -110,7 +110,8 @@ permissions:
 # They always run as the user nobody: no capabilities, no supplementary groups
 # and no_new_privs (sudo and other setuid programs cannot gain privileges), so
 # they can read what every user may read and change nothing. The target needs
-# setpriv (util-linux, installed on nearly every distribution).
+# setpriv and setsid from util-linux (installed on nearly every distribution)
+# or BusyBox (Alpine).
 commands:
   # Time limit of one command. Output is limited to 64 KiB.
   timeout: 30s

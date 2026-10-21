@@ -194,8 +194,10 @@ The agent runs as root, so the design keeps what can reach it small:
   `commands.allow_any` is enabled, typed commands run through `setpriv` as
   `nobody`: no capabilities, no supplementary groups, `no_new_privs` (so
   `sudo` and other setuid programs cannot gain privileges), a time limit and
-  an output limit. If `nobody` or `setpriv` is missing the command does not
-  run at all.
+  an output limit. Each command runs in its own session; on timeout, and when
+  it exits, everything it started is killed. util-linux and BusyBox (Alpine)
+  both work; if `nobody`, `setpriv` or `setsid` is missing the command does
+  not run at all.
 - **Permissions** decide which actions Home Assistant may use; reboots (host
   and guests separately, with exclusions), restores and typed commands are
   off by default. Entities for disallowed actions are not even published.
