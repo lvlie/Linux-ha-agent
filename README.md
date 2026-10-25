@@ -171,7 +171,11 @@ Containers, on hosts and inside guests:
   `incus.compose_dirs`, can only be checked against that digest, which never
   shows an update. incus-compose itself needs Incus listening on the network
   (`core.https_address`) for its image cache, and an Incus OCI remote named
-  after each registry it pulls from (for example `docker.io`).
+  after each registry it pulls from (for example `docker.io`). The agent
+  passes its own `INCUS_*` environment variables on to incus-compose, so its
+  settings can be set on the service, for example `INCUS_COMPOSE_NO_HEALTHD=true`
+  in a systemd drop-in when a project has a `restart:` policy but Incus has no
+  https listener for the healthd sidecar.
 - New images are detected by comparing local image digests with the registry
   (HEAD requests, which do not count against Docker Hub limits). Containers
   pinned by digest are left alone; standalone containers are reported but not
