@@ -145,7 +145,10 @@ Containers, on hosts and inside guests:
   instance that has snapshots, so the agent takes none (there is no restore
   button) and reports instances with snapshots instead of updating them. Nothing runs
   inside these containers (many have no shell), so they get no package,
-  system or command sensors.
+  system or command sensors, and they are checked and updated also while
+  stopped (a stopped container stays stopped). A container whose registry
+  has the installed image is not rebuilt; when the registry cannot be asked,
+  only an upgrade of that container itself rebuilds it, not `upgrade_all`.
 - Containers created by **incus-compose** are updated through incus-compose
   (`incus-compose up --detach --pull always --no-deps <service>` in the
   project directory), because it recreates instances whose image differs
@@ -153,6 +156,7 @@ Containers, on hosts and inside guests:
   agent looks for compose files in `incus.compose_dirs` (default `/root`, and
   its subdirectories) and matches them by project name. incus-compose
   recreates instances, so no snapshot is taken and there is no restore button.
+  A stopped service is not updated, since `incus-compose up` would start it.
   incus-compose itself needs Incus listening on the network
   (`core.https_address`) for its image cache, and an Incus OCI remote named
   after each registry it pulls from (for example `docker.io`).

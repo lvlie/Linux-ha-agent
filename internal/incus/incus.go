@@ -89,9 +89,10 @@ func App(config map[string]string) *guest.App {
 	return app
 }
 
-// ociArchitectures maps Incus architecture names to OCI ones.
+// ociArchitectures maps Incus architecture names to OCI ones, with the
+// variant where one architecture has several ("arm/v7").
 var ociArchitectures = map[string]string{
-	"x86_64": "amd64", "i686": "386", "aarch64": "arm64", "armv7l": "arm", "armv6l": "arm",
+	"x86_64": "amd64", "i686": "386", "aarch64": "arm64", "armv7l": "arm/v7", "armv6l": "arm/v6",
 	"ppc64le": "ppc64le", "s390x": "s390x", "riscv64": "riscv64", "loongarch64": "loong64",
 }
 
@@ -130,6 +131,9 @@ func (a *API) RebuildApp(ctx context.Context, g guest.Guest, timeout time.Durati
 			}
 		}
 	}
+	// The scheme only selects the proxy: Incus hands skopeo a docker://
+	// reference, so a registry that only speaks HTTP is set up for skopeo
+	// (insecure in registries.conf), for rebuilds as for launches.
 	op, err := server.RebuildInstance(g.Name, api.InstanceRebuildPost{Source: api.InstanceSource{
 		Type: "image", Server: "https://" + registry, Protocol: "oci", Alias: path,
 	}})

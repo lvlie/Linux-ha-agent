@@ -26,6 +26,8 @@ type Fake struct {
 	OnRebuild func(g Guest)
 	// SnapshotErr makes CreateSnapshot fail.
 	SnapshotErr error
+	// SnapshotsErr makes Snapshots fail.
+	SnapshotsErr error
 }
 
 // NewFake returns a Fake with the given guests. Each guest gets its own
@@ -98,6 +100,9 @@ func (f *Fake) CreateSnapshot(_ context.Context, g Guest, name string, _ time.Ti
 func (f *Fake) Snapshots(_ context.Context, g Guest) ([]Snapshot, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.SnapshotsErr != nil {
+		return nil, f.SnapshotsErr
+	}
 	return slices.Clone(f.snapshots[g.Key()]), nil
 }
 

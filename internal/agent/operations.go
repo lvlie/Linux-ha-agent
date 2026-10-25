@@ -202,8 +202,9 @@ func (a *Agent) restartContainer(ctx context.Context, d *Device, key, trigger st
 }
 
 // upgrade upgrades one device and reports whether it needs a reboot that was
-// not done (only the host; guests are restarted here when allowed).
-func (a *Agent) upgrade(ctx context.Context, d *Device, action, trigger string) (needsReboot bool) {
+// not done (only the host; guests are restarted here when allowed). all is
+// set when the device is upgraded as one of all devices.
+func (a *Agent) upgrade(ctx context.Context, d *Device, action, trigger string, all bool) (needsReboot bool) {
 	report := &RunReport{Trigger: trigger, Action: action, Started: a.now()}
 	log := a.log.With("device", d.ID, "action", action, "trigger", trigger)
 	log.Info("upgrade starting")
@@ -223,6 +224,15 @@ func (a *Agent) upgrade(ctx context.Context, d *Device, action, trigger string) 
 		a.check(ctx, d)
 	}()
 
+	opCtx, cancel := a.withTimeout(ctx)
+	defer cancel()
+
+	// Nothing runs inside application containers, so stopped ones are
+	// updated too (upgradeApp refuses what it cannot do while stopped).
+	if d.app() != nil {
+		a.upgradeApp(opCtx, d, report, all)
+		return false
+	}
 	if !d.running() {
 		report.step("start", false, errors.New("guest is not running"), "")
 		return false
@@ -235,14 +245,6 @@ func (a *Agent) upgrade(ctx context.Context, d *Device, action, trigger string) 
 		report.step("start", false, errors.New(d.Guest.Unmanageable), "")
 		return false
 	}
-	opCtx, cancel := a.withTimeout(ctx)
-	defer cancel()
-
-	if d.app() != nil {
-		a.upgradeApp(opCtx, d, report)
-		return false
-	}
-
 	if d.Guest != nil && a.cfg.Guests.Snapshot && !a.snapshot(opCtx, d, report) {
 		return false // never upgrade without the safety net
 	}
@@ -338,20 +340,32 @@ func (a *Agent) upgradeAll(ctx context.Context, trigger string) {
 	a.log.Info("upgrade of host and guests starting", "trigger", trigger)
 	hostReboot := false
 	if a.cfg.Host.Manage {
-		hostReboot = a.upgrade(ctx, a.host, ha.CmdUpgrade, trigger)
+		hostReboot = a.upgrade(ctx, a.host, ha.CmdUpgrade, trigger, true)
 	}
 	for _, d := range a.deviceList() {
-		if d.Host || !d.running() {
+		if d.Host || !a.upgradable(d) {
 			continue
 		}
 		if ctx.Err() != nil {
 			return
 		}
-		a.upgrade(ctx, d, ha.CmdUpgrade, trigger)
+		a.upgrade(ctx, d, ha.CmdUpgrade, trigger, true)
 	}
 	if hostReboot && a.cfg.Upgrade.RebootHost {
 		a.rebootHost(ctx, trigger)
 	}
+}
+
+// upgradable reports whether upgrade_all upgrades a guest: running guests,
+// and stopped application containers that are rebuilt without starting them.
+func (a *Agent) upgradable(d *Device) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if d.running() {
+		return true
+	}
+	app := d.app()
+	return app != nil && app.ComposeProject == "" && a.appInstallable(d)
 }
 
 func (a *Agent) rebootHost(ctx context.Context, trigger string) {

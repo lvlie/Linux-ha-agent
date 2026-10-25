@@ -4,16 +4,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/lvlie/linux-ha-agent/internal/containers"
 	"github.com/lvlie/linux-ha-agent/internal/guest"
 	"github.com/lvlie/linux-ha-agent/internal/incuscompose"
 )
 
+// composeCacheTTL is how long the incus-compose projects found in
+// incus.compose_dirs are reused before the directories are read again.
+const composeCacheTTL = time.Minute
+
 // AppCheck is the image check of an OCI application container.
 type AppCheck struct {
 	Image string `json:"image"`
-	// Installed and Latest are Incus image fingerprints.
+	// Installed and Latest are Incus image fingerprints. Installed is the
+	// image at check time; the guest's current one may differ since.
 	Installed string `json:"installed"`
 	Latest    string `json:"latest"`
 	// Error explains why the registry could not be asked.
@@ -22,9 +28,18 @@ type AppCheck struct {
 	ComposeDir string `json:"compose_dir,omitempty"`
 }
 
-// UpdateAvailable reports whether the registry has a newer image.
-func (c *AppCheck) UpdateAvailable() bool {
-	return c != nil && c.Latest != "" && c.Installed != "" && c.Latest != c.Installed
+// UpdateAvailable reports whether the registry has a newer image than the
+// installed one: the guest's current fingerprint, which changes without a new
+// check when the container is updated outside the agent.
+func (c *AppCheck) UpdateAvailable(installed string) bool {
+	return c != nil && c.Latest != "" && installed != "" && c.Latest != installed
+}
+
+// appUpdate reports whether an application container has a newer image.
+// Callers hold a.mu.
+func (d *Device) appUpdate() bool {
+	app := d.app()
+	return app != nil && d.Check != nil && d.Check.App.UpdateAvailable(app.Fingerprint)
 }
 
 func (d *Device) app() *guest.App {
@@ -38,7 +53,14 @@ func (d *Device) app() *guest.App {
 // It needs nothing from inside the container, so it also works when stopped.
 func (a *Agent) appCheck(ctx context.Context, d *Device) {
 	a.mu.Lock()
-	app := *d.app()
+	current := d.app()
+	if current == nil {
+		// Replaced by a guest that is no application container.
+		a.mu.Unlock()
+		a.publish(d, false)
+		return
+	}
+	app := *current
 	a.mu.Unlock()
 	c := &Check{Time: a.now(), App: &AppCheck{Image: app.Image, Installed: app.Fingerprint}}
 	resolver, ok := a.registry.(containers.FingerprintResolver)
@@ -64,9 +86,17 @@ func (a *Agent) appCheck(ctx context.Context, d *Device) {
 	a.publish(d, false)
 }
 
-// composeDir finds the directory of an incus-compose project.
+// composeDir finds the directory of an incus-compose project. The projects
+// are cached for composeCacheTTL, so the directories are read once for all
+// apps of a check cycle rather than once per app.
 func (a *Agent) composeDir(project string) (string, bool) {
-	dir, ok := incuscompose.Find(a.cfg.Incus.ComposeDirs)[project]
+	a.composeMu.Lock()
+	defer a.composeMu.Unlock()
+	if a.composeProjects == nil || a.now().Sub(a.composeTime) >= composeCacheTTL {
+		a.composeProjects = incuscompose.Find(a.cfg.Incus.ComposeDirs)
+		a.composeTime = a.now()
+	}
+	dir, ok := a.composeProjects[project]
 	return dir, ok
 }
 
@@ -78,7 +108,12 @@ func (a *Agent) appInstallable(d *Device) bool {
 	case app == nil || app.Image == "":
 		return false
 	case app.ComposeProject != "":
-		return d.Check != nil && d.Check.App != nil && d.Check.App.ComposeDir != ""
+		// `incus-compose up` would start a stopped service.
+		if !d.running() {
+			return false
+		}
+		_, ok := a.composeDir(app.ComposeProject)
+		return ok
 	default:
 		_, ok := d.Provider.(guest.AppProvider)
 		return ok
@@ -87,18 +122,29 @@ func (a *Agent) appInstallable(d *Device) bool {
 
 // upgradeApp updates an application container to the newest version of its
 // image: through incus-compose when it manages the container, otherwise by
-// rebuilding the instance from the registry.
-func (a *Agent) upgradeApp(ctx context.Context, d *Device, report *RunReport) {
+// rebuilding the instance from the registry. A rebuild stops the container,
+// so it is skipped when the registry has the installed image; when the
+// registry cannot be asked, only an upgrade of this one device (not one of
+// all devices) rebuilds anyway.
+func (a *Agent) upgradeApp(ctx context.Context, d *Device, report *RunReport, all bool) {
 	a.mu.Lock()
 	g := *d.Guest
 	a.mu.Unlock()
 	app := g.App
+	if app == nil {
+		report.step("image", false, errors.New("the instance is no application container"), "")
+		return
+	}
 	if app.Image == "" {
 		report.step("image", false, errors.New("the instance has no image information"), "")
 		return
 	}
 
 	if app.ComposeProject != "" {
+		if !g.Running() {
+			report.step("incus-compose", false, errors.New("the service is not running, and incus-compose would start it"), "")
+			return
+		}
 		dir, ok := a.composeDir(app.ComposeProject)
 		if !ok {
 			report.step("incus-compose", false, fmt.Errorf("project %q not found in incus.compose_dirs %v", app.ComposeProject, a.cfg.Incus.ComposeDirs), "")
@@ -117,23 +163,40 @@ func (a *Agent) upgradeApp(ctx context.Context, d *Device, report *RunReport) {
 		report.step("image", false, fmt.Errorf("%s cannot rebuild application containers", g.Platform), "")
 		return
 	}
-	if resolver, ok := a.registry.(containers.FingerprintResolver); ok {
-		latest, err := resolver.Fingerprint(ctx, app.Image, app.Architecture)
-		if err == nil && latest == app.Fingerprint {
-			report.step("image", false, nil, "up to date")
-			return
-		}
+	latest, err := a.latestFingerprint(ctx, app)
+	switch {
+	case err == nil && latest == app.Fingerprint:
+		report.step("image", false, nil, "up to date")
+		return
+	case err != nil && all:
+		report.step("image", false, nil, "skipped: cannot tell whether a newer image exists: "+err.Error())
+		return
 	}
 	// Incus cannot rebuild an instance that has snapshots, so none is taken
 	// (the data of application containers belongs in volumes, which a
 	// rebuild keeps), and the user's own snapshots are left alone.
-	if snaps, err := d.Provider.Snapshots(ctx, g); err == nil && len(snaps) > 0 {
+	snaps, err := d.Provider.Snapshots(ctx, g)
+	switch {
+	case err != nil:
+		report.step("rebuild from "+app.Image, false, err, "")
+		return
+	case len(snaps) > 0:
 		report.step("rebuild from "+app.Image, false, fmt.Errorf("the instance has %d snapshot(s), and Incus cannot rebuild an instance with snapshots; remove them to update it", len(snaps)), "")
 		return
 	}
-	err := rebuilder.RebuildApp(ctx, g, a.cfg.Guests.StopTimeout)
+	err = rebuilder.RebuildApp(ctx, g, a.cfg.Guests.StopTimeout)
 	changed := a.refreshGuest(ctx, d, app.Fingerprint)
 	report.step("rebuild from "+app.Image, changed, err, imageDetail(changed, app.Image))
+}
+
+// latestFingerprint asks the registry for the fingerprint of the newest
+// version of an app's image.
+func (a *Agent) latestFingerprint(ctx context.Context, app *guest.App) (string, error) {
+	resolver, ok := a.registry.(containers.FingerprintResolver)
+	if !ok {
+		return "", errors.New("no registry to ask")
+	}
+	return resolver.Fingerprint(ctx, app.Image, app.Architecture)
 }
 
 func imageDetail(changed bool, image string) string {
