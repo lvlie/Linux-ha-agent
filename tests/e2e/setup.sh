@@ -79,9 +79,10 @@ incus exec podman-fed -- sh -c 'cd /root/app && podman-compose up -d'
 # OCI application containers (Incus 6.3 and later; OCI=1): one launched
 # directly from the registry and one managed by incus-compose.
 if [ "${OCI:-0}" = 1 ]; then
-  incus remote add gcr https://mirror.gcr.io --protocol=oci --public
+  # incus-compose finds a registry through the Incus remote of that name.
+  incus remote add mirror.gcr.io https://mirror.gcr.io --protocol=oci --public
   for i in 1 2 3 4 5; do
-    incus launch gcr:library/busybox:1.36 oci-app -c oci.entrypoint="sleep 2147483647" && break
+    incus launch mirror.gcr.io:library/busybox:1.36 oci-app -c oci.entrypoint="sleep 2147483647" && break
     echo "launch of the OCI container failed (attempt $i), retrying"
     incus delete --force oci-app 2>/dev/null || true
     sleep $((i * 5))

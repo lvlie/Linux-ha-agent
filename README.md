@@ -152,7 +152,8 @@ Containers, on hosts and inside guests:
   its subdirectories) and matches them by project name. incus-compose
   recreates instances, so no snapshot is taken and there is no restore button.
   incus-compose itself needs Incus listening on the network
-  (`core.https_address`) for its image cache.
+  (`core.https_address`) for its image cache, and an Incus OCI remote named
+  after each registry it pulls from (for example `docker.io`).
 - New images are detected by comparing local image digests with the registry
   (HEAD requests, which do not count against Docker Hub limits). Containers
   pinned by digest are left alone; standalone containers are reported but not
