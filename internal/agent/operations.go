@@ -357,15 +357,15 @@ func (a *Agent) upgradeAll(ctx context.Context, trigger string) {
 }
 
 // upgradable reports whether upgrade_all upgrades a guest: running guests,
-// and stopped application containers that are rebuilt without starting them.
+// and application containers that can be rebuilt, also when stopped. Those
+// that cannot (Proxmox VE only reports their updates) are left out.
 func (a *Agent) upgradable(d *Device) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if d.running() {
-		return true
+	if app := d.app(); app != nil && app.ComposeProject == "" {
+		return a.appInstallable(d)
 	}
-	app := d.app()
-	return app != nil && app.ComposeProject == "" && a.appInstallable(d)
+	return d.running()
 }
 
 func (a *Agent) rebootHost(ctx context.Context, trigger string) {

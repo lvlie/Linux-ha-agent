@@ -528,7 +528,7 @@ func (a *Agent) handleAutoUpgrade(_ string, payload []byte) {
 func (a *Agent) saveState() {
 	a.mu.Lock()
 	st := persisted{AutoUpgrade: a.state.AutoUpgrade, LastRuns: map[string]*RunReport{},
-		Components: map[string]map[string]string{}, Discovery: map[string]ha.Device{}}
+		Components: map[string]map[string]string{}, Discovery: map[string]ha.Device{}, ImageDigests: map[string]map[string]string{}}
 	for id, d := range a.devices {
 		st.Devices = append(st.Devices, id)
 		if d.LastRun != nil {
@@ -539,6 +539,9 @@ func (a *Agent) saveState() {
 		}
 		if d.lastChecked != nil {
 			st.Discovery[id] = *d.lastChecked
+		}
+		if len(d.imageDigests) > 0 {
+			st.ImageDigests[id] = d.imageDigests
 		}
 	}
 	a.mu.Unlock()
@@ -686,7 +689,7 @@ func (a *Agent) syncGuests(ctx context.Context) {
 		}
 	}
 	seen := map[string]bool{a.host.ID: true}
-	var added, started []*Device
+	var added, started, reimaged []*Device
 	a.mu.Lock()
 	for _, f := range all {
 		g := f.g
@@ -699,17 +702,22 @@ func (a *Agent) syncGuests(ctx context.Context) {
 		d := a.devices[id]
 		if d == nil {
 			d = &Device{ID: id, Name: guestName(g), Guest: &g, Provider: f.p, Runner: f.p.Runner(g),
-				LastRun: a.state.LastRuns[id], components: a.state.Components[id], lastChecked: lastChecked(a.state, id)}
+				LastRun: a.state.LastRuns[id], components: a.state.Components[id], lastChecked: lastChecked(a.state, id),
+				imageDigests: a.state.ImageDigests[id]}
 			a.devices[id] = d
 			added = append(added, d)
 			continue
 		}
 		wasRunning := d.running()
+		imageChanged := d.Guest.App != nil && g.App != nil && *d.Guest.App != *g.App
 		d.Guest = &g
 		d.Provider = f.p
 		d.Runner = f.p.Runner(g)
-		if !wasRunning && g.Running() {
+		switch {
+		case !wasRunning && g.Running():
 			started = append(started, d)
+		case imageChanged:
+			reimaged = append(reimaged, d)
 		}
 	}
 	var removed []string
@@ -741,6 +749,9 @@ func (a *Agent) syncGuests(ctx context.Context) {
 	}
 	for _, d := range started {
 		a.enqueue(op{kind: ha.CmdCheck, device: d.ID, trigger: "started"})
+	}
+	for _, d := range reimaged {
+		a.enqueue(op{kind: ha.CmdCheck, device: d.ID, trigger: "image changed"})
 	}
 	a.PublishAll(false)
 	if len(added) > 0 || len(removed) > 0 {

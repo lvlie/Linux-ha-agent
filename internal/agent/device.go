@@ -45,6 +45,10 @@ type Device struct {
 	lastCommand *commands.Result
 	// commandRunning is set while a typed command runs.
 	commandRunning bool
+	// imageDigests maps the Incus fingerprints of an application
+	// container's running and newest image to their registry digests,
+	// which Incus does not keep. Persisted across restarts.
+	imageDigests map[string]string
 }
 
 // commandState renders a command result for the state.
@@ -88,6 +92,8 @@ func guestKind(g guest.Guest) string {
 	switch {
 	case g.App != nil && g.App.ComposeProject != "":
 		return "incus-compose service"
+	case g.App != nil && g.Platform == "proxmox":
+		return "Proxmox OCI container"
 	case g.App != nil:
 		return "Incus OCI container"
 	case g.Platform == "proxmox" && g.Type == guest.VirtualMachine:
@@ -152,6 +158,42 @@ func shortDigest(d string) string {
 	return d
 }
 
+// imageTag is the tag of an image reference: "latest" when none is given,
+// empty for references pinned to a digest or image IDs.
+func imageTag(ref string) string {
+	if ref == "" || strings.Contains(ref, "@") || strings.HasPrefix(ref, "sha256:") {
+		return ""
+	}
+	if i := strings.LastIndex(ref, ":"); i > strings.LastIndex(ref, "/") {
+		return ref[i+1:]
+	}
+	return "latest"
+}
+
+// imageName is an image reference as it shows in versions: with its tag
+// ("latest" when none is given), without a pinned digest, and empty for
+// image IDs.
+func imageName(ref string) string {
+	if ref == "" || strings.HasPrefix(ref, "sha256:") {
+		return ""
+	}
+	if repo, _, pinned := strings.Cut(ref, "@"); pinned {
+		return repo
+	}
+	return strings.TrimSuffix(ref, ":"+imageTag(ref)) + ":" + imageTag(ref)
+}
+
+// imageVersion is how an image version shows in Home Assistant: the image
+// with its tag and the short digest, "ghcr.io/linuxserver/sonarr:latest
+// (3d5ef2653c7b)".
+func imageVersion(ref, digest string) string {
+	name := imageName(ref)
+	if name == "" {
+		return shortDigest(digest)
+	}
+	return name + " (" + shortDigest(digest) + ")"
+}
+
 // containerStates renders the per-container part of the state.
 func (d *Device) containerStates() map[string]any {
 	out := map[string]any{}
@@ -165,21 +207,29 @@ func (d *Device) containerStates() map[string]any {
 		}
 	}
 	for _, c := range d.Check.Containers {
-		installed := "unknown"
+		digest := ""
 		if digests := d.Check.LocalDigests[c.ImageID]; len(digests) > 0 {
-			installed = shortDigest(digests[0])
-		} else if c.ImageID != "" {
-			installed = shortDigest(c.ImageID)
+			digest = digests[0]
+		}
+		id := digest
+		if id == "" {
+			id = c.ImageID
+		}
+		tag := imageTag(c.Image)
+		installed := "unknown"
+		if id != "" {
+			installed = imageVersion(c.Image, id)
 		}
 		latest := installed
-		if digest, ok := newer[c.Name]; ok {
-			latest = shortDigest(digest)
+		latestDigest := digest
+		if newDigest, ok := newer[c.Name]; ok {
+			latest, latestDigest = imageVersion(c.Image, newDigest), newDigest
 		}
 		out[ha.ContainerKey(c.Engine, c.Name)] = map[string]any{
 			"running": c.Running(),
 			"info": map[string]any{
-				"engine": c.Engine, "image": c.Image, "state": c.State, "project": c.Project,
-				"service": c.Service, "update_available": latest != installed,
+				"engine": c.Engine, "image": c.Image, "tag": tag, "digest": digest, "latest_digest": latestDigest,
+				"state": c.State, "project": c.Project, "service": c.Service, "update_available": latest != installed,
 			},
 			"update": updateInfo{
 				InstalledVersion: strPtr(installed),
@@ -192,10 +242,12 @@ func (d *Device) containerStates() map[string]any {
 	return out
 }
 
-// updateInfo is the payload of a Home Assistant update entity.
+// updateInfo is the payload of a Home Assistant update entity. Unknown
+// versions are left out: Home Assistant rejects null and keeps the previous
+// value when a key is missing.
 type updateInfo struct {
-	InstalledVersion *string `json:"installed_version"`
-	LatestVersion    *string `json:"latest_version"`
+	InstalledVersion *string `json:"installed_version,omitempty"`
+	LatestVersion    *string `json:"latest_version,omitempty"`
 	Title            string  `json:"title"`
 	ReleaseSummary   string  `json:"release_summary,omitempty"`
 	InProgress       bool    `json:"in_progress"`
@@ -260,13 +312,27 @@ func (d *Device) state(extra map[string]any) map[string]any {
 		st["platform"] = guestKind(*d.Guest)
 	}
 	if app := d.app(); app != nil {
-		st["app"] = map[string]any{"image": app.Image, "compose_project": app.ComposeProject, "compose_service": app.ComposeService}
-		current := shortDigest(app.Fingerprint)
+		tag := imageTag(app.Image)
+		digest := d.digest(app.Fingerprint)
+		attrs := map[string]any{
+			"image": app.Image, "tag": tag, "digest": digest, "latest_digest": digest,
+			"compose_project": app.ComposeProject, "compose_service": app.ComposeService,
+		}
+		if app.ByDigest {
+			// Not recorded by the platform: the newest digest when the
+			// container was first checked.
+			attrs["digest_assumed"] = digest != "" && d.Guest.App.Fingerprint == ""
+		} else {
+			attrs["fingerprint"] = app.Fingerprint
+		}
+		st["app"] = attrs
+		current := d.appVersion(app.Image, app.Fingerprint)
 		u := updateInfo{Title: app.Image, InstalledVersion: strPtr(current), LatestVersion: strPtr(current), InProgress: d.Operation != ""}
 		if d.Check != nil && d.Check.App != nil {
-			st["app"].(map[string]any)["error"] = d.Check.App.Error
+			attrs["error"] = d.Check.App.Error
 			if d.appUpdate() {
-				u.LatestVersion = strPtr(shortDigest(d.Check.App.Latest))
+				attrs["latest_digest"] = d.digest(d.Check.App.Latest)
+				u.LatestVersion = strPtr(d.appVersion(app.Image, d.Check.App.Latest))
 				st["image_update_list"] = []containers.ImageUpdate{{Image: app.Image, Digest: d.Check.App.Latest, Containers: []string{d.Name}, Managed: true}}
 			}
 			st["image_updates"] = d.pendingImages()
@@ -367,6 +433,25 @@ func (d *Device) state(extra map[string]any) map[string]any {
 		st[k] = v
 	}
 	return st
+}
+
+// appVersion is the version of an application container image with the
+// given fingerprint: the image with the registry digest, or with the
+// fingerprint while the digest is not known.
+func (d *Device) appVersion(ref, fingerprint string) string {
+	if digest := d.digest(fingerprint); digest != "" {
+		return imageVersion(ref, digest)
+	}
+	return imageVersion(ref, fingerprint)
+}
+
+// digest is the registry digest of an application container image with the
+// given fingerprint, or empty when not known.
+func (d *Device) digest(fingerprint string) string {
+	if app := d.app(); app != nil && app.ByDigest {
+		return fingerprint
+	}
+	return d.imageDigests[fingerprint]
 }
 
 func (d *Device) pendingUpdates() int {

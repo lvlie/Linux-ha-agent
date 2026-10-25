@@ -84,10 +84,17 @@ host. The full list is in [docs/entities.md](docs/entities.md).
 - **Containers** (Docker, Podman, on hosts and in guests): per container a
   running sensor, an update entity that pulls the newer image and recreates
   just that container, and a restart button; per machine the number of
-  running containers and of newer images.
+  running containers and of newer images. Image versions show the image as
+  written in the compose file with its tag and digest, e.g.
+  `ghcr.io/linuxserver/sonarr:latest (3d5ef2653c7b)`, also for the OCI
+  application containers below.
 - **Incus OCI application containers** (`incus launch docker:nginx`, and
   incus-compose): each one is a device with an image update entity that
   rebuilds it from the newer image, or updates it through incus-compose.
+- **Proxmox VE OCI application containers** (Proxmox VE 9.1+): each one is a
+  device whose image (from an `image:` line in its notes) is checked against
+  its registry; updates are reported, Proxmox has no way to update them in
+  place. See [Proxmox VE notes](#proxmox-ve-notes).
 - **Actions**: check, upgrade (packages, containers, single containers, or
   the host and all guests), reboot or restart, restore the pre-upgrade
   snapshot, and an automatic upgrade schedule with an on/off switch.
@@ -125,7 +132,7 @@ Virtualisation platforms (both can be used on one machine; detected automaticall
 | | Guests | How commands run inside | Snapshots | Changes noticed by |
 | --- | --- | --- | --- | --- |
 | Incus | containers and VMs, all projects | Incus API exec (like `incus exec`) | Incus API, with native expiry | Incus event stream |
-| Proxmox VE | LXC containers and QEMU VMs on the local node (templates skipped) | `pct exec`; `qm guest exec` through the QEMU guest agent | `pct`/`qm snapshot`; the agent removes its own expired snapshots | polling `pvesh` (every minute) |
+| Proxmox VE | LXC containers (also OCI application containers) and QEMU VMs on the local node (templates skipped) | `pct exec`; `qm guest exec` through the QEMU guest agent; nothing in OCI application containers | `pct`/`qm snapshot`; the agent removes its own expired snapshots | polling `pvesh` and the container configs in `/etc/pve` (every minute) |
 
 Containers, on hosts and inside guests:
 
@@ -193,6 +200,23 @@ the guest list current and trigger a check when a guest starts.
   check fail with 401.
 - Debian does not create `/var/run/reboot-required`; a pending reboot is
   detected by comparing the newest installed kernel with the running one.
+- **OCI application containers** (created from an OCI image, Proxmox VE 9.1+)
+  are recognised by their entrypoint and get the entities of
+  [application containers](docs/entities.md#oci-application-containers)
+  instead of running commands inside. Proxmox records neither the image nor
+  its digest, so add the image to the container's **Notes**:
+
+  ```text
+  image: ghcr.io/linuxserver/sonarr:latest
+  ```
+
+  The agent assumes that the image was the newest when it first checks the
+  container, and reports when the registry has a newer one. To state the
+  running version exactly, add its digest:
+  `image: ghcr.io/linuxserver/sonarr:latest@sha256:...`; update that line when
+  you recreate the container from a newer image. Updates are only reported:
+  Proxmox cannot rebuild a container from a newer image, so there is no
+  *Install* action and *Upgrade host and guests* leaves them alone.
 - **VMs** need the QEMU guest agent: enable it in the VM options and install
   `qemu-guest-agent` inside. VMs without it (and non-Linux VMs) are listed
   with their state, but are not checked or upgraded.

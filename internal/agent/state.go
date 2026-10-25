@@ -87,6 +87,8 @@ type persisted struct {
 	// checked, so a restart does not briefly drop entities that only
 	// exist after a check (containers, temperature).
 	Discovery map[string]ha.Device `json:"discovery,omitempty"`
+	// ImageDigests are the Device.imageDigests of application containers.
+	ImageDigests map[string]map[string]string `json:"image_digests,omitempty"`
 }
 
 func loadState(path string) (persisted, error) {

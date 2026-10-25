@@ -348,6 +348,15 @@ func TestCheckState(t *testing.T) {
 	if alp["updates"] != nil || alp["os"] != "Alpine Linux v3.22" || alp["check_error"] != "" {
 		t.Errorf("alpine state: %v", alp)
 	}
+	for _, key := range []string{"system_update", "container_update"} {
+		u := alp[key].(map[string]any)
+		if _, ok := u["installed_version"]; ok {
+			t.Errorf("alpine %s has unknown versions, they must be left out: %v", key, u)
+		}
+		if _, ok := u["latest_version"]; ok {
+			t.Errorf("alpine %s has unknown versions, they must be left out: %v", key, u)
+		}
+	}
 	old := e.state(t, "lab1_old")
 	if old["running"] != false || old["last_check"] != nil {
 		t.Errorf("stopped guest must not be checked: %v", old)

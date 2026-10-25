@@ -49,6 +49,12 @@ type App struct {
 	// incus-compose, which then also owns their updates.
 	ComposeProject string
 	ComposeService string
+	// ByDigest is set where the platform keeps no fingerprint (Proxmox VE):
+	// images are compared by their registry digest instead, and Fingerprint
+	// is the digest of the running image when the platform knows it.
+	ByDigest bool
+	// NoImage explains why Image is empty.
+	NoImage string
 }
 
 // AppProvider is implemented by platforms that run application containers.
