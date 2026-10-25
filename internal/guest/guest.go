@@ -42,7 +42,8 @@ type App struct {
 	// Fingerprint identifies the image the container runs; see
 	// containers.Registry.Fingerprint.
 	Fingerprint string
-	// Architecture of the image in OCI terms ("amd64", "arm64").
+	// Architecture of the image in OCI terms, with the variant where one
+	// architecture has several ("amd64", "arm64", "arm/v7").
 	Architecture string
 	// ComposeProject and ComposeService are set for containers created by
 	// incus-compose, which then also owns their updates.

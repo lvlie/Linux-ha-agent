@@ -205,3 +205,186 @@ func TestIncusComposeApp(t *testing.T) {
 		t.Error("upgrade accepted although the project cannot be found")
 	}
 }
+
+func lastRun(t *testing.T, e *env, id string) map[string]any {
+	t.Helper()
+	last, ok := e.state(t, id)["last_run"].(map[string]any)
+	if !ok {
+		t.Fatalf("%s has no last run", id)
+	}
+	return last
+}
+
+func TestStoppedOCIAppIsUpdated(t *testing.T) {
+	stopped := appGuest("nginx", guest.App{Image: "docker.io/library/nginx:1.27"})
+	stopped.Status = "Stopped"
+	e := newEnvWith(t, nil, withApps(stopped))
+	// Checked when found, although stopped: nothing runs inside it.
+	e.agent.mu.Lock()
+	checked := e.agent.devices["lab1_nginx"].Check != nil
+	e.agent.mu.Unlock()
+	if !checked {
+		t.Fatal("stopped app not checked when discovered")
+	}
+	e.agent.registry = registry{"fp:docker.io/library/nginx:1.27": newFP}
+	e.command("lab1_nginx", ha.CmdCheck)
+	if e.state(t, "lab1_nginx")["updates_available"] != true {
+		t.Fatal("no update found for the stopped app")
+	}
+	if c := components(e.discovery(t, "lab1_nginx"))["app_update"].(map[string]any); c["payload_install"] != ha.CmdUpgrade {
+		t.Fatalf("stopped app not installable: %v", c)
+	}
+	e.incus.OnRebuild = func(g guest.Guest) { replaceImage(e, g.Key(), newFP) }
+	e.command("lab1_nginx", ha.CmdUpgrade)
+	if len(e.incus.Rebuilds) != 1 {
+		t.Fatalf("stopped app not rebuilt: %v", lastRun(t, e, "lab1_nginx"))
+	}
+	if last := lastRun(t, e, "lab1_nginx"); last["success"] != true {
+		t.Errorf("last run: %v", last)
+	}
+
+	replaceImage(e, "default/nginx", oldFP)
+	e.agent.syncGuests(context.Background())
+	e.command("lab1", ha.CmdUpgradeAll)
+	if len(e.incus.Rebuilds) != 2 {
+		t.Error("upgrade_all skipped the stopped app")
+	}
+}
+
+func TestStoppedComposeAppIsNotStarted(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "web")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte("services: {app: {}}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stopped := appGuest("web-app-1", guest.App{Image: "ghcr.io/me/app:v2", ComposeProject: "web", ComposeService: "app"})
+	stopped.Status = "Stopped"
+	e := newEnvWith(t, func(c *config.Config) { c.Incus.ComposeDirs = []string{filepath.Dir(dir)} }, func(env *env) {
+		withApps(stopped)(env)
+		env.host.On("sh incus-compose", runner.Result{}).On("incus-compose up", runner.Result{})
+	})
+	e.agent.registry = registry{"fp:ghcr.io/me/app:v2": newFP}
+	if _, ok := components(e.discovery(t, "lab1_web_app_1"))["upgrade"]; ok {
+		t.Error("upgrade button for a stopped compose service")
+	}
+	e.command("lab1_web_app_1", ha.CmdUpgrade)
+	e.command("lab1", ha.CmdUpgradeAll)
+	if e.host.Ran("incus-compose up") {
+		t.Error("incus-compose started a stopped service")
+	}
+}
+
+func TestComposeAppInstallableBeforeCheck(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "web")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte("services: {app: {}}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e := newEnvWith(t, func(c *config.Config) { c.Incus.ComposeDirs = []string{filepath.Dir(dir)} },
+		withApps(appGuest("web-app-1", guest.App{Image: "ghcr.io/me/app:v2", ComposeProject: "web", ComposeService: "app"})))
+	e.agent.mu.Lock()
+	d := e.agent.devices["lab1_web_app_1"]
+	d.Check = nil
+	installable := e.agent.appInstallable(d)
+	e.agent.mu.Unlock()
+	if !installable {
+		t.Error("compose app not installable until checked")
+	}
+}
+
+func TestOCIAppRebuildWhenRegistryUnknown(t *testing.T) {
+	e := newEnvWith(t, nil, withApps(appGuest("nginx", guest.App{Image: "docker.io/library/nginx:1.27"})))
+	e.agent.registry = registry{} // the registry cannot be asked
+
+	// Scheduled upgrades of all devices do not stop the app on a guess.
+	e.command("lab1", ha.CmdUpgradeAll)
+	if len(e.incus.Rebuilds) != 0 {
+		t.Fatal("rebuilt on upgrade_all although the registry could not be asked")
+	}
+	// Asked for this app alone, it is rebuilt.
+	e.command("lab1_nginx", ha.CmdUpgrade)
+	if len(e.incus.Rebuilds) != 1 {
+		t.Fatal("explicit upgrade did not rebuild")
+	}
+}
+
+func TestOCIAppSnapshotListingFails(t *testing.T) {
+	e := newEnvWith(t, nil, withApps(appGuest("nginx", guest.App{Image: "docker.io/library/nginx:1.27"})))
+	e.agent.registry = registry{"fp:docker.io/library/nginx:1.27": newFP}
+	e.incus.SnapshotsErr = errors.New("api down")
+	e.command("lab1_nginx", ha.CmdUpgrade)
+	if len(e.incus.Rebuilds) != 0 {
+		t.Fatal("rebuilt without knowing about snapshots")
+	}
+	if last := lastRun(t, e, "lab1_nginx"); last["success"] != false {
+		t.Errorf("last run: %v", last)
+	}
+}
+
+func TestOCIAppRejectsPartialUpgrades(t *testing.T) {
+	e := newEnvWith(t, nil, withApps(appGuest("nginx", guest.App{Image: "docker.io/library/nginx:1.27"})))
+	e.agent.registry = registry{"fp:docker.io/library/nginx:1.27": newFP}
+	for _, cmd := range []string{ha.CmdUpgradePackages, ha.CmdUpgradeContainers} {
+		e.command("lab1_nginx", cmd)
+	}
+	if len(e.incus.Rebuilds) != 0 {
+		t.Errorf("partial upgrade rebuilt the app: %v", e.incus.Rebuilds)
+	}
+	if e.state(t, "lab1_nginx")["last_run"] != nil {
+		t.Error("partial upgrade accepted")
+	}
+}
+
+func TestOCIAppUpdatedOutsideTheAgent(t *testing.T) {
+	e := newEnvWith(t, nil, withApps(appGuest("nginx", guest.App{Image: "docker.io/library/nginx:1.27"})))
+	e.agent.registry = registry{"fp:docker.io/library/nginx:1.27": newFP}
+	e.command("lab1_nginx", ha.CmdCheck)
+	if e.state(t, "lab1_nginx")["updates_available"] != true {
+		t.Fatal("no update found")
+	}
+	// e.g. `incus-compose up` by hand: the lifecycle sync loads the new image.
+	replaceImage(e, "default/nginx", newFP)
+	e.agent.syncGuests(context.Background())
+	st := e.state(t, "lab1_nginx")
+	if st["updates_available"] != false || st["image_updates"].(float64) != 0 {
+		t.Errorf("update still pending after the image changed: %v %v", st["updates_available"], st["image_updates"])
+	}
+}
+
+func TestAppCheckWithoutApp(t *testing.T) {
+	e := newEnvWith(t, nil, withApps(appGuest("nginx", guest.App{Image: "docker.io/library/nginx:1.27"})))
+	e.agent.mu.Lock()
+	d := e.agent.devices["lab1_nginx"]
+	g := *d.Guest
+	g.App = nil
+	d.Guest = &g // replaced after check() decided it is an app
+	e.agent.mu.Unlock()
+	e.agent.appCheck(context.Background(), d) // must not panic
+}
+
+func TestComposeDirIsCached(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 10, 20, 3, 0, 0, 0, time.UTC)
+	a := &Agent{now: func() time.Time { return now }}
+	a.cfg.Incus.ComposeDirs = []string{root}
+	if _, ok := a.composeDir("web"); ok {
+		t.Fatal("found a missing project")
+	}
+	if err := os.MkdirAll(filepath.Join(root, "web"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "web", "compose.yaml"), []byte("services: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := a.composeDir("web"); ok {
+		t.Error("directories read again within the cache time")
+	}
+	now = now.Add(composeCacheTTL)
+	if dir, ok := a.composeDir("web"); !ok || dir != filepath.Join(root, "web") {
+		t.Errorf("cache not refreshed: %q", dir)
+	}
+}

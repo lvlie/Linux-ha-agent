@@ -59,6 +59,11 @@ type Agent struct {
 	topics    ha.Topics
 	schedule  cron.Schedule
 
+	// composeProjects caches incuscompose.Find; see composeDir.
+	composeMu       sync.Mutex
+	composeProjects map[string]string
+	composeTime     time.Time
+
 	mu      sync.Mutex
 	devices map[string]*Device
 	host    *Device
@@ -368,7 +373,7 @@ func (a *Agent) execute(ctx context.Context, o op) {
 	case ha.CmdCheck:
 		a.check(ctx, d)
 	case ha.CmdUpgrade, ha.CmdUpgradePackages, ha.CmdUpgradeContainers:
-		needsReboot := a.upgrade(ctx, d, o.kind, o.trigger)
+		needsReboot := a.upgrade(ctx, d, o.kind, o.trigger, false)
 		if needsReboot && d.Host && a.cfg.Upgrade.RebootHost {
 			a.rebootHost(ctx, o.trigger)
 		}
@@ -469,10 +474,14 @@ func (a *Agent) allowed(d *Device, cmd, arg string) error {
 			return errors.New("upgrades are not permitted")
 		}
 		a.mu.Lock()
-		installable := d.app() == nil || a.appInstallable(d)
+		isApp := d.app() != nil
+		installable := !isApp || a.appInstallable(d)
 		a.mu.Unlock()
+		if isApp && cmd != ha.CmdUpgrade {
+			return fmt.Errorf("application containers have no packages or containers of their own; use %s to update the image", ha.CmdUpgrade)
+		}
 		if !installable {
-			return errors.New("the agent cannot update this application container (incus-compose project not found?)")
+			return errors.New("the agent cannot update this application container (incus-compose project not found, or the service is stopped?)")
 		}
 	case ha.CmdUpgradeAll:
 		if !p.Upgrade {
@@ -725,7 +734,8 @@ func (a *Agent) syncGuests(ctx context.Context) {
 	}
 	for _, d := range added {
 		a.log.Info("guest found", "device", d.ID, "status", d.Guest.Status)
-		if d.running() {
+		// Application containers are checked from outside, also when stopped.
+		if d.running() || d.app() != nil {
 			a.enqueue(op{kind: ha.CmdCheck, device: d.ID, trigger: "discovered"})
 		}
 	}

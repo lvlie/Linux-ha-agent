@@ -265,7 +265,7 @@ func (d *Device) state(extra map[string]any) map[string]any {
 		u := updateInfo{Title: app.Image, InstalledVersion: strPtr(current), LatestVersion: strPtr(current), InProgress: d.Operation != ""}
 		if d.Check != nil && d.Check.App != nil {
 			st["app"].(map[string]any)["error"] = d.Check.App.Error
-			if d.Check.App.UpdateAvailable() {
+			if d.appUpdate() {
 				u.LatestVersion = strPtr(shortDigest(d.Check.App.Latest))
 				st["image_update_list"] = []containers.ImageUpdate{{Image: app.Image, Digest: d.Check.App.Latest, Containers: []string{d.Name}, Managed: true}}
 			}
@@ -381,7 +381,7 @@ func (d *Device) pendingImages() int {
 		return 0
 	}
 	if d.Check.App != nil {
-		if d.Check.App.UpdateAvailable() {
+		if d.appUpdate() {
 			return 1
 		}
 		return 0

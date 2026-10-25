@@ -21,7 +21,8 @@ type DigestResolver interface {
 }
 
 // FingerprintResolver computes the Incus fingerprint of the current version
-// of an OCI image in its registry.
+// of an OCI image in its registry. arch is an OCI architecture, with its
+// variant where there are several ("amd64", "arm/v7").
 type FingerprintResolver interface {
 	Fingerprint(ctx context.Context, ref, arch string) (string, error)
 }
@@ -109,10 +110,7 @@ func (r *Registry) Fingerprint(ctx context.Context, ref, arch string) (string, e
 	if err != nil {
 		return "", err
 	}
-	if arch == "" {
-		arch = runtime.GOARCH
-	}
-	img, err := remote.Image(parsed, r.options(ctx, remote.WithPlatform(v1.Platform{OS: "linux", Architecture: arch}))...)
+	img, err := remote.Image(parsed, r.options(ctx, remote.WithPlatform(platform(arch)))...)
 	if err != nil {
 		return "", err
 	}
@@ -132,6 +130,16 @@ func (r *Registry) Fingerprint(ctx context.Context, ref, arch string) (string, e
 	r.fingerprints[key] = fp
 	r.mu.Unlock()
 	return fp, nil
+}
+
+// platform is the Linux platform of an architecture with an optional variant
+// ("arm/v7"); empty is the agent's own.
+func platform(arch string) v1.Platform {
+	if arch == "" {
+		arch = runtime.GOARCH
+	}
+	arch, variant, _ := strings.Cut(arch, "/")
+	return v1.Platform{OS: "linux", Architecture: arch, Variant: variant}
 }
 
 // IncusFingerprint is how Incus fingerprints an OCI image: the SHA-256 of

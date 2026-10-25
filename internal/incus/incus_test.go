@@ -38,7 +38,7 @@ func TestApp(t *testing.T) {
 }
 
 func TestOCIArchitecture(t *testing.T) {
-	for incus, oci := range map[string]string{"x86_64": "amd64", "aarch64": "arm64", "amd64": "amd64", "": ""} {
+	for incus, oci := range map[string]string{"x86_64": "amd64", "aarch64": "arm64", "armv7l": "arm/v7", "armv6l": "arm/v6", "amd64": "amd64", "": ""} {
 		if got := App(map[string]string{"image.type": "oci", "image.architecture": incus}).Architecture; got != oci {
 			t.Errorf("%q: got %q, want %q", incus, got, oci)
 		}

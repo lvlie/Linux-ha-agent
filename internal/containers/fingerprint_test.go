@@ -33,23 +33,26 @@ func TestRegistryFingerprint(t *testing.T) {
 	defer srv.Close()
 	host := strings.TrimPrefix(srv.URL, "http://")
 
-	push := func(arch string) v1.Image {
+	push := func(arch string, variant string) v1.Image {
 		img, err := random.Image(64, 2)
 		if err != nil {
 			t.Fatal(err)
 		}
 		cfg, _ := img.ConfigFile()
-		cfg.Architecture, cfg.OS = arch, "linux"
+		cfg.Architecture, cfg.OS, cfg.Variant = arch, "linux", variant
 		img, err = mutate.ConfigFile(img, cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
 		return img
 	}
-	amd, arm := push("amd64"), push("arm64")
+	amd, arm, armv6, armv7 := push("amd64", ""), push("arm64", ""), push("arm", "v6"), push("arm", "v7")
+	// v6 first: a lookup that ignores the variant picks it on armv7 too.
 	idx := mutate.AppendManifests(mutate.IndexMediaType(empty.Index, "application/vnd.oci.image.index.v1+json"),
 		mutate.IndexAddendum{Add: amd, Descriptor: v1.Descriptor{Platform: &v1.Platform{OS: "linux", Architecture: "amd64"}}},
 		mutate.IndexAddendum{Add: arm, Descriptor: v1.Descriptor{Platform: &v1.Platform{OS: "linux", Architecture: "arm64"}}},
+		mutate.IndexAddendum{Add: armv6, Descriptor: v1.Descriptor{Platform: &v1.Platform{OS: "linux", Architecture: "arm", Variant: "v6"}}},
+		mutate.IndexAddendum{Add: armv7, Descriptor: v1.Descriptor{Platform: &v1.Platform{OS: "linux", Architecture: "arm", Variant: "v7"}}},
 	)
 	ref := host + "/library/app:1"
 	parsed, err := name.ParseReference(ref, name.Insecure)
@@ -61,7 +64,7 @@ func TestRegistryFingerprint(t *testing.T) {
 	}
 
 	r := &Registry{}
-	for arch, img := range map[string]v1.Image{"amd64": amd, "arm64": arm} {
+	for arch, img := range map[string]v1.Image{"amd64": amd, "arm64": arm, "arm/v6": armv6, "arm/v7": armv7} {
 		got, err := r.Fingerprint(context.Background(), ref, arch)
 		if err != nil {
 			t.Fatal(err)
@@ -76,7 +79,7 @@ func TestRegistryFingerprint(t *testing.T) {
 			t.Errorf("%s: got %s, want %s", arch, got, want)
 		}
 	}
-	if fp, _ := r.Fingerprint(context.Background(), ref, "amd64"); len(r.fingerprints) != 2 || fp == "" {
+	if fp, _ := r.Fingerprint(context.Background(), ref, "amd64"); len(r.fingerprints) != 4 || fp == "" {
 		t.Errorf("fingerprints not cached by manifest digest: %v", r.fingerprints)
 	}
 	if _, err := r.Fingerprint(context.Background(), host+"/library/missing:1", "amd64"); err == nil {
