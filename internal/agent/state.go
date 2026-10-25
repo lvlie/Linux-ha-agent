@@ -71,6 +71,8 @@ type Check struct {
 	// LocalDigests maps image IDs to their registry digests.
 	LocalDigests   map[string][]string
 	RebootRequired bool
+	// App is the image check of an OCI application container.
+	App *AppCheck
 }
 
 // persisted is the agent's state file: things that must survive restarts.

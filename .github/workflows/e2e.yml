@@ -62,6 +62,10 @@ jobs:
           EOF
           sudo apt-get update -q
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q incus mosquitto mosquitto-clients
+          # OCI application containers need skopeo and umoci (Incus 6.3+).
+          if [ "$CHANNEL" = stable ]; then
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q skopeo umoci
+          fi
           sudo incus admin init --minimal
           sudo incus version
           # Docker on the runner drops forwarded traffic, cutting off the Incus bridge.
@@ -78,8 +82,16 @@ jobs:
           sudo chown mosquitto: /etc/mosquitto/e2e.passwd /etc/mosquitto/e2e.acl
           sudo systemctl restart mosquitto
 
+      - name: Install incus-compose
+        if: matrix.incus == 'stable'
+        run: |
+          GOBIN="$PWD/bin" go install github.com/lxc/incus-compose/cmd/incus-compose@v1.3.5
+          sudo install bin/incus-compose /usr/local/bin/
+
       - name: Create guests
-        run: sudo tests/e2e/setup.sh
+        env:
+          OCI: ${{ matrix.incus == 'stable' && '1' || '0' }}
+        run: sudo --preserve-env=OCI tests/e2e/setup.sh
 
       - name: Start the agent
         run: |
@@ -90,7 +102,9 @@ jobs:
             "$PWD/dist/linux-ha-agent-linux-amd64" -config "$PWD/tests/e2e/agent.yaml"
 
       - name: Run the end-to-end test
-        run: sudo ./e2e.test -test.v -test.timeout 80m
+        env:
+          E2E_OCI: ${{ matrix.incus == 'stable' && '1' || '0' }}
+        run: sudo --preserve-env=E2E_OCI ./e2e.test -test.v -test.timeout 80m
 
       - name: Agent log and Incus state
         if: always()

@@ -186,6 +186,10 @@ func waitForRun(t *testing.T, b *broker, dev string, since time.Time) map[string
 	return run
 }
 
+// oci is set when the Incus version supports OCI application containers and
+// setup.sh created them.
+var oci = os.Getenv("E2E_OCI") == "1"
+
 func TestE2E(t *testing.T) {
 	b := homeAssistant(t)
 
@@ -244,7 +248,11 @@ func TestE2E(t *testing.T) {
 			}
 		}
 		host := b.state(hostID)
-		if host["guests"] != 5.0 || host["guests_running"] != 4.0 || host["updates_total"] == nil {
+		guests, running := 5.0, 4.0
+		if oci {
+			guests, running = guests+2, running+2 // the OCI containers
+		}
+		if host["guests"] != guests || host["guests_running"] != running || host["updates_total"] == nil {
 			t.Errorf("host totals: guests=%v running=%v updates=%v", host["guests"], host["guests_running"], host["updates_total"])
 		}
 		if _, ok := b.discovery(device("docker_web"))["kernel_update"]; ok {
@@ -296,6 +304,79 @@ func TestE2E(t *testing.T) {
 		}
 		if _, err := exec.Command("incus", "exec", "docker-web", "--", "test", "-e", "/root/pwned").CombinedOutput(); err == nil {
 			t.Error("a typed command wrote to /root")
+		}
+	})
+
+	t.Run("OCI application container", func(t *testing.T) {
+		if !oci {
+			t.Skip("no OCI support in this Incus version")
+		}
+		app := device("oci_app")
+		eventually(t, 5*time.Minute, "check of "+app, func() bool {
+			st := b.state(app)
+			return st != nil && st["last_check"] != nil
+		})
+		st := b.state(app)
+		u, _ := st["app_update"].(map[string]any)
+		if st["check_error"] != "" || u == nil || u["installed_version"] != u["latest_version"] || st["platform"] != "Incus OCI container" {
+			t.Fatalf("freshly launched container: %v", st)
+		}
+		cmps := b.discovery(app)
+		if cmps["app_update"]["payload_install"] != "upgrade" || cmps["restore_snapshot"] == nil || cmps["kernel"] != nil || cmps["cmd_whoami"] != nil {
+			t.Fatalf("entities: %v", cmps)
+		}
+
+		// Pretend it was launched from busybox:latest, which is newer.
+		incus(t, "config", "set", "oci-app", "image.id=library/busybox:latest")
+		eventually(t, 2*time.Minute, "update of "+app, func() bool {
+			b.command(t, app, "check")
+			time.Sleep(3 * time.Second)
+			return b.state(app)["updates_available"] == true
+		})
+		since := time.Now()
+		b.command(t, app, "upgrade")
+		run := waitForRun(t, b, app, since)
+		t.Logf("steps: %v", run["steps"])
+		if run["changed"] != true {
+			t.Errorf("not rebuilt: %v", run)
+		}
+		if id := incus(t, "config", "get", "oci-app", "image.id"); id != "library/busybox:latest" {
+			t.Errorf("image.id after the rebuild: %q", id)
+		}
+		if !strings.Contains(incus(t, "snapshot", "list", "oci-app", "--format", "csv"), "ha-agent-") {
+			t.Error("no pre-upgrade snapshot")
+		}
+		if state := incus(t, "list", "oci-app", "-c", "s", "-f", "csv"); state != "RUNNING" {
+			t.Errorf("not running after the rebuild: %s", state)
+		}
+		eventually(t, 2*time.Minute, "up to date after the rebuild", func() bool {
+			return b.state(app)["updates_available"] == false
+		})
+	})
+
+	t.Run("incus-compose service", func(t *testing.T) {
+		if !oci {
+			t.Skip("no OCI support in this Incus version")
+		}
+		svc := device("icapp_web_1")
+		eventually(t, 5*time.Minute, "check of "+svc, func() bool {
+			st := b.state(svc)
+			return st != nil && st["last_check"] != nil
+		})
+		st := b.state(svc)
+		if st["platform"] != "incus-compose service" || st["app"].(map[string]any)["compose_project"] != "icapp" {
+			t.Fatalf("state: %v", st)
+		}
+		cmps := b.discovery(svc)
+		if cmps["app_update"]["payload_install"] != "upgrade" || cmps["restore_snapshot"] != nil {
+			t.Fatalf("entities: %v", cmps)
+		}
+		since := time.Now()
+		b.command(t, svc, "upgrade")
+		run := waitForRun(t, b, svc, since)
+		steps, _ := json.Marshal(run["steps"])
+		if !strings.Contains(string(steps), "incus-compose icapp/web") {
+			t.Errorf("not upgraded through incus-compose: %s", steps)
 		}
 	})
 

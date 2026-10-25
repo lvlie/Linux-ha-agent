@@ -171,9 +171,10 @@ func (a *Agent) features(d *Device) ha.Features {
 		reboot = p.RebootGuests && !a.rebootExcluded(d)
 	}
 	return ha.Features{
-		Upgrade:  p.Upgrade,
-		Reboot:   reboot,
-		Restore:  p.Restore && a.cfg.Guests.Snapshot && len(a.providers) > 0,
+		Upgrade: p.Upgrade,
+		Reboot:  reboot,
+		// incus-compose recreates its instances, which removes their snapshots.
+		Restore:  p.Restore && a.cfg.Guests.Snapshot && len(a.providers) > 0 && (d.app() == nil || d.app().ComposeProject == ""),
 		Schedule: a.schedule != nil,
 
 		RestartContainers: p.RestartContainers,
@@ -466,6 +467,12 @@ func (a *Agent) allowed(d *Device, cmd, arg string) error {
 		if !p.Upgrade {
 			return errors.New("upgrades are not permitted")
 		}
+		a.mu.Lock()
+		installable := d.app() == nil || a.appInstallable(d)
+		a.mu.Unlock()
+		if !installable {
+			return errors.New("the agent cannot update this application container (incus-compose project not found?)")
+		}
 	case ha.CmdUpgradeAll:
 		if !p.Upgrade {
 			return errors.New("upgrades are not permitted")
@@ -544,6 +551,7 @@ func (a *Agent) publish(d *Device, forceDiscovery bool) {
 	origin := ha.Origin{Name: "linux-ha-agent", Version: a.version, URL: ProjectURL}
 	dev := d.haDevice(a.topics.HostID, a.cfg.Checks.ContainerEntities)
 	dev.Commands, dev.AnyCommand = a.commandEntities(d), a.anyCommand(d)
+	dev.AppInstall = a.appInstallable(d)
 	payload, components, err := ha.Payload(a.topics, origin, dev, a.features(d), d.components)
 	sendDiscovery := err == nil && (forceDiscovery || string(payload) != d.discovery)
 	componentsChanged := false

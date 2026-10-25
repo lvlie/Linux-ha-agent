@@ -44,6 +44,10 @@ incus:
   # socket: /var/lib/incus/unix.socket
   # Only these projects (empty: all projects).
   projects: []
+  # Where incus-compose projects live: these directories and their direct
+  # subdirectories are searched for compose files. Containers of a project
+  # that is not found are reported, but not updated.
+  compose_dirs: [/root]
 
 proxmox:
   # auto: use Proxmox VE when /etc/pve and pvesh exist. true / false to force.

@@ -29,6 +29,33 @@ type Guest struct {
 	// Unmanageable explains why commands cannot run inside the guest (for
 	// example a VM without guest agent). Empty when the guest is manageable.
 	Unmanageable string
+	// App is set for application containers created from an OCI image
+	// (Incus "docker:" images); nil for system containers and VMs.
+	App *App
+}
+
+// App describes an application container that runs an OCI image. It has no
+// package manager of its own: it is updated by replacing its image.
+type App struct {
+	// Image is the registry reference, e.g. "docker.io/library/nginx:1.27".
+	Image string
+	// Fingerprint identifies the image the container runs; see
+	// containers.Registry.Fingerprint.
+	Fingerprint string
+	// Architecture of the image in OCI terms ("amd64", "arm64").
+	Architecture string
+	// ComposeProject and ComposeService are set for containers created by
+	// incus-compose, which then also owns their updates.
+	ComposeProject string
+	ComposeService string
+}
+
+// AppProvider is implemented by platforms that run application containers.
+type AppProvider interface {
+	// RebuildApp replaces the container's root file system with the current
+	// version of its image, keeping its configuration, devices and volumes.
+	// A running container is stopped (waiting up to timeout) and started again.
+	RebuildApp(ctx context.Context, g Guest, timeout time.Duration) error
 }
 
 // Key identifies a guest on its platform.

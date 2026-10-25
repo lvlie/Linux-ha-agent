@@ -15,6 +15,7 @@ import (
 
 	incusclient "github.com/lxc/incus/v7/client"
 	"github.com/lxc/incus/v7/shared/api"
+	"github.com/lxc/incus/v7/shared/util"
 
 	"github.com/lvlie/linux-ha-agent/internal/guest"
 	"github.com/lvlie/linux-ha-agent/internal/runner"
@@ -49,10 +50,96 @@ func (a *API) Guests(_ context.Context) ([]guest.Guest, error) {
 		if project == "" {
 			project = api.ProjectDefaultName
 		}
-		guests = append(guests, guest.Guest{Platform: "incus", Name: inst.Name, Project: project, Type: inst.Type, Status: inst.Status})
+		guests = append(guests, guest.Guest{Platform: "incus", Name: inst.Name, Project: project, Type: inst.Type, Status: inst.Status,
+			App: App(inst.ExpandedConfig)})
 	}
 	slices.SortFunc(guests, func(a, b guest.Guest) int { return strings.Compare(a.Key(), b.Key()) })
 	return guests, nil
+}
+
+// App describes an OCI application container from its configuration; nil
+// for other instances. Incus copies the image properties into image.* keys:
+// image.description is "<registry>/<repository> (OCI)" and image.id is the
+// reference it was launched with ("nginx:1.27", "nginx", "nginx@sha256:...").
+func App(config map[string]string) *guest.App {
+	if config["image.type"] != "oci" && !util.IsTrue(config["volatile.container.oci"]) {
+		return nil
+	}
+	app := &guest.App{
+		Fingerprint:    config["volatile.base_image"],
+		Architecture:   config["image.architecture"],
+		ComposeProject: config["user.label.incus-compose.project"],
+		ComposeService: config["user.label.incus-compose.service"],
+	}
+	repo := strings.TrimSpace(strings.TrimSuffix(config["image.description"], "(OCI)"))
+	if repo == "" {
+		return app // no image information: cannot be checked or rebuilt
+	}
+	id := config["image.id"]
+	switch _, digest, pinned := strings.Cut(id, "@"); {
+	case pinned:
+		app.Image = repo + "@" + digest
+	default:
+		tag := "latest"
+		if i := strings.LastIndex(id, ":"); i > strings.LastIndex(id, "/") {
+			tag = id[i+1:]
+		}
+		app.Image = repo + ":" + tag
+	}
+	return app
+}
+
+// RebuildApp implements guest.AppProvider: the instance is rebuilt from its
+// OCI image in the registry, like `incus rebuild docker:<image> <name>`.
+// Incus downloads the image itself (with skopeo, as for `incus launch`).
+func (a *API) RebuildApp(ctx context.Context, g guest.Guest, timeout time.Duration) error {
+	if g.App == nil || g.App.Image == "" {
+		return fmt.Errorf("%s has no OCI image to rebuild from", g.Key())
+	}
+	registry, path, ok := strings.Cut(g.App.Image, "/")
+	if !ok {
+		return fmt.Errorf("%s: image %q has no registry", g.Key(), g.App.Image)
+	}
+	server := a.project(g)
+	running := g.Running()
+	if running {
+		// Many application containers ignore SIGTERM (a process running as
+		// PID 1 without a handler), so force the stop after the timeout.
+		if err := a.setState(ctx, server, g, "stop", timeout); err != nil {
+			op, ferr := server.UpdateInstanceState(g.Name, api.InstanceStatePut{Action: "stop", Force: true}, "")
+			if ferr == nil {
+				ferr = op.WaitContext(ctx)
+			}
+			if ferr != nil {
+				return errors.Join(err, ferr)
+			}
+		}
+	}
+	op, err := server.RebuildInstance(g.Name, api.InstanceRebuildPost{Source: api.InstanceSource{
+		Type: "image", Server: "https://" + registry, Protocol: "oci", Alias: path,
+	}})
+	if err == nil {
+		err = op.WaitContext(ctx)
+	}
+	if err != nil {
+		err = fmt.Errorf("rebuild of %s from %s: %w", g.Key(), g.App.Image, err)
+	}
+	if running {
+		// Start it again also when the rebuild failed: it then runs the old image.
+		err = errors.Join(err, a.setState(ctx, server, g, "start", timeout))
+	}
+	return err
+}
+
+func (a *API) setState(ctx context.Context, server incusclient.InstanceServer, g guest.Guest, action string, timeout time.Duration) error {
+	op, err := server.UpdateInstanceState(g.Name, api.InstanceStatePut{Action: action, Timeout: int(timeout.Seconds())}, "")
+	if err == nil {
+		err = op.WaitContext(ctx)
+	}
+	if err != nil {
+		return fmt.Errorf("%s of %s: %w", action, g.Key(), err)
+	}
+	return nil
 }
 
 func (a *API) project(g guest.Guest) incusclient.InstanceServer {
@@ -164,22 +251,14 @@ func (a *API) RestoreSnapshot(ctx context.Context, g guest.Guest, name string) e
 
 // Restart restarts the guest, waiting up to timeout for a clean shutdown.
 func (a *API) Restart(ctx context.Context, g guest.Guest, timeout time.Duration) error {
-	op, err := a.project(g).UpdateInstanceState(g.Name, api.InstanceStatePut{
-		Action:  "restart",
-		Timeout: int(timeout.Seconds()),
-	}, "")
-	if err != nil {
-		return fmt.Errorf("restart of %s: %w", g.Key(), err)
-	}
-	if err := op.WaitContext(ctx); err != nil {
-		return fmt.Errorf("restart of %s: %w", g.Key(), err)
-	}
-	return nil
+	return a.setState(ctx, a.project(g), g, "restart", timeout)
 }
 
 var lifecycleActions = []string{
 	"instance-created", "instance-deleted", "instance-started", "instance-stopped",
 	"instance-restarted", "instance-renamed", "instance-shutdown", "instance-restored",
+	// Configuration changes (exclusions, labels, image keys).
+	"instance-updated",
 }
 
 // WatchLifecycle implements guest.Provider.

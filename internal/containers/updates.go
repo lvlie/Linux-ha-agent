@@ -2,12 +2,16 @@ package containers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 )
 
@@ -16,12 +20,23 @@ type DigestResolver interface {
 	Digest(ctx context.Context, ref string) (string, error)
 }
 
+// FingerprintResolver computes the Incus fingerprint of the current version
+// of an OCI image in its registry.
+type FingerprintResolver interface {
+	Fingerprint(ctx context.Context, ref, arch string) (string, error)
+}
+
 // Registry resolves digests with HEAD requests against the registry, which
 // do not count against Docker Hub pull limits. Results are cached until
 // Reset, so one check cycle asks the registry once per reference.
 type Registry struct {
 	mu    sync.Mutex
 	cache map[string]registryResult
+	// fingerprints by manifest digest and architecture; digests never
+	// change, so this survives Reset.
+	fingerprints map[string]string
+	// Options are extra options for every registry request (tests).
+	Options []remote.Option
 }
 
 type registryResult struct {
@@ -38,7 +53,7 @@ func (r *Registry) Digest(ctx context.Context, ref string) (string, error) {
 	}
 	r.mu.Unlock()
 
-	digest, err := headDigest(ctx, ref)
+	digest, err := r.headDigest(ctx, ref)
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -56,16 +71,77 @@ func (r *Registry) Reset() {
 	r.cache = nil
 }
 
-func headDigest(ctx context.Context, ref string) (string, error) {
+func (r *Registry) options(ctx context.Context, extra ...remote.Option) []remote.Option {
+	opts := []remote.Option{remote.WithContext(ctx), remote.WithAuthFromKeychain(authn.DefaultKeychain)}
+	return append(append(opts, r.Options...), extra...)
+}
+
+func (r *Registry) headDigest(ctx context.Context, ref string) (string, error) {
 	parsed, err := name.ParseReference(ref)
 	if err != nil {
 		return "", err
 	}
-	desc, err := remote.Head(parsed, remote.WithContext(ctx), remote.WithAuthFromKeychain(authn.DefaultKeychain))
+	desc, err := remote.Head(parsed, r.options(ctx)...)
 	if err != nil {
 		return "", err
 	}
 	return desc.Digest.String(), nil
+}
+
+// Fingerprint implements FingerprintResolver. Incus identifies an OCI image
+// by the SHA-256 of its layer digests (as skopeo lists them for the
+// architecture), so this is what a container launched from ref today would
+// have in volatile.base_image. Only a HEAD request is made while the tag
+// still points at a manifest seen before.
+func (r *Registry) Fingerprint(ctx context.Context, ref, arch string) (string, error) {
+	digest, err := r.Digest(ctx, ref)
+	if err != nil {
+		return "", err
+	}
+	key := digest + "|" + arch
+	r.mu.Lock()
+	fp, ok := r.fingerprints[key]
+	r.mu.Unlock()
+	if ok {
+		return fp, nil
+	}
+	parsed, err := name.ParseReference(ref)
+	if err != nil {
+		return "", err
+	}
+	if arch == "" {
+		arch = runtime.GOARCH
+	}
+	img, err := remote.Image(parsed, r.options(ctx, remote.WithPlatform(v1.Platform{OS: "linux", Architecture: arch}))...)
+	if err != nil {
+		return "", err
+	}
+	manifest, err := img.Manifest()
+	if err != nil {
+		return "", err
+	}
+	layers := make([]string, 0, len(manifest.Layers))
+	for _, l := range manifest.Layers {
+		layers = append(layers, l.Digest.String())
+	}
+	fp = IncusFingerprint(layers)
+	r.mu.Lock()
+	if r.fingerprints == nil {
+		r.fingerprints = map[string]string{}
+	}
+	r.fingerprints[key] = fp
+	r.mu.Unlock()
+	return fp, nil
+}
+
+// IncusFingerprint is how Incus fingerprints an OCI image: the SHA-256 of
+// its layer digests written one after the other.
+func IncusFingerprint(layers []string) string {
+	h := sha256.New()
+	for _, l := range layers {
+		h.Write([]byte(l))
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // ImageUpdate is an image with a newer version in its registry.

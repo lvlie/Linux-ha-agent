@@ -15,6 +15,9 @@ const commandTick = 10 * time.Second
 
 // runsOn reports whether commands for these machines run on a device.
 func runsOn(machines []string, d *Device) bool {
+	if d.app() != nil {
+		return false // application containers often have no shell at all
+	}
 	if d.Guest == nil {
 		return config.RunsOn(machines, nil)
 	}

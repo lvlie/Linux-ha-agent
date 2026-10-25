@@ -21,6 +21,9 @@ type Fake struct {
 
 	Restarts []string
 	Restores []string
+	Rebuilds []string
+	// OnRebuild is called by RebuildApp, e.g. to change the guest's image.
+	OnRebuild func(g Guest)
 	// SnapshotErr makes CreateSnapshot fail.
 	SnapshotErr error
 }
@@ -129,4 +132,16 @@ func (f *Fake) WatchLifecycle(ctx context.Context, fn func()) error {
 			fn()
 		}
 	}
+}
+
+// RebuildApp implements AppProvider.
+func (f *Fake) RebuildApp(_ context.Context, g Guest, _ time.Duration) error {
+	f.mu.Lock()
+	f.Rebuilds = append(f.Rebuilds, g.Key())
+	hook := f.OnRebuild
+	f.mu.Unlock()
+	if hook != nil {
+		hook(g)
+	}
+	return nil
 }

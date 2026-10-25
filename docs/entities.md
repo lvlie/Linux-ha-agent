@@ -49,6 +49,20 @@ Container entities can be turned off with `checks.container_entities: false`.
 | Platform | diagnostic sensor | Incus container/VM, Proxmox LXC/VM |
 | Restore pre-upgrade snapshot | button | Permission `restore` |
 
+## Incus OCI application containers
+
+Containers launched from OCI images (`incus launch docker:...`, incus-compose)
+are guests with these entities instead of the package, system and command
+ones above:
+
+| Entity | Type | Notes |
+| --- | --- | --- |
+| Image | update | Running and newest image fingerprint; image, compose project and service as attributes. *Install* rebuilds the container from the newer image, or runs incus-compose for its service |
+| Updates available | binary sensor | |
+| Upgrade running, Last upgrade, Last upgrade result | | As for machines |
+| Running, Platform | | Platform is *Incus OCI container* or *incus-compose service* |
+| Upgrade, Restart, Restore pre-upgrade snapshot | button | Restore is not offered for incus-compose services (it recreates them) |
+
 ## The host
 
 | Entity | Type | Notes |

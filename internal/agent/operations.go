@@ -36,6 +36,10 @@ func (a *Agent) packageManager(ctx context.Context, d *Device) (packages.Manager
 
 // check inspects a device and publishes the result.
 func (a *Agent) check(ctx context.Context, d *Device) {
+	if d.app() != nil {
+		a.appCheck(ctx, d)
+		return
+	}
 	if !d.running() || !a.managesPackages(d) {
 		a.publish(d, false)
 		return
@@ -133,7 +137,7 @@ func (a *Agent) check(ctx context.Context, d *Device) {
 
 // refreshStats updates CPU, memory, disk, load and kernel information.
 func (a *Agent) refreshStats(ctx context.Context, d *Device) {
-	if !d.running() || !d.manageable() || !a.managesPackages(d) {
+	if !d.running() || !d.manageable() || !a.managesPackages(d) || d.app() != nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
@@ -234,12 +238,13 @@ func (a *Agent) upgrade(ctx context.Context, d *Device, action, trigger string) 
 	opCtx, cancel := a.withTimeout(ctx)
 	defer cancel()
 
-	if d.Guest != nil && a.cfg.Guests.Snapshot {
-		name := SnapshotPrefix + a.now().UTC().Format("20060102-150405")
-		err := d.Provider.CreateSnapshot(opCtx, *d.Guest, name, a.now().Add(a.cfg.Guests.SnapshotKeep))
-		if !report.step("snapshot", false, err, name) {
-			return false // never upgrade without the safety net
-		}
+	if d.app() != nil {
+		a.upgradeApp(opCtx, d, report)
+		return false
+	}
+
+	if d.Guest != nil && a.cfg.Guests.Snapshot && !a.snapshot(opCtx, d, report) {
+		return false // never upgrade without the safety net
 	}
 
 	var mgr packages.Manager
@@ -289,6 +294,13 @@ func (a *Agent) upgrade(ctx context.Context, d *Device, action, trigger string) 
 	}
 	report.step("restart", true, d.Provider.Restart(opCtx, *d.Guest, a.cfg.Guests.StopTimeout), "restarted because a reboot was required")
 	return false
+}
+
+// snapshot takes the pre-upgrade snapshot of a guest.
+func (a *Agent) snapshot(ctx context.Context, d *Device, report *RunReport) bool {
+	name := SnapshotPrefix + a.now().UTC().Format("20060102-150405")
+	err := d.Provider.CreateSnapshot(ctx, *d.Guest, name, a.now().Add(a.cfg.Guests.SnapshotKeep))
+	return report.step("snapshot", false, err, name)
 }
 
 func (a *Agent) upgradeContainers(ctx context.Context, d *Device, report *RunReport) {
