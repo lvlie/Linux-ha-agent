@@ -28,17 +28,16 @@ Other machines: linux-ha-agent (manages only itself)
    hosts only on the host, not in the guests):
 
    ```sh
-   # Debian, Ubuntu, Proxmox VE
-   sudo apt install ./linux-ha-agent_<version>-1_amd64.deb
-   # Fedora, RHEL, Rocky, Alma
-   sudo dnf install ./linux-ha-agent-<version>-1.x86_64.rpm
-   # anything else, with Go
-   go install github.com/lvlie/linux-ha-agent/cmd/linux-ha-agent@latest
+   curl -fsSLO https://github.com/lvlie/linux-ha-agent/releases/latest/download/install.sh
+   sudo sh install.sh
    ```
 
-   Packages are on the [releases page](https://github.com/lvlie/linux-ha-agent/releases);
-   see [docs/installation.md](docs/installation.md) for the install script,
-   NixOS and details.
+   On Debian, Ubuntu, Proxmox VE, Fedora, RHEL, Rocky and Alma this adds the
+   signed [package repository](https://lvlie.github.io/Linux-ha-agent/), so
+   new versions arrive with the normal system updates (also through the
+   agent's own *Install* action). See [docs/installation.md](docs/installation.md)
+   for setting up the repository by hand, the packages on the
+   [releases page](https://github.com/lvlie/linux-ha-agent/releases), Go and NixOS.
 
 2. **Prepare Home Assistant**: install the *Mosquitto broker* add-on, accept
    the MQTT integration it offers, and create a user for the machine named

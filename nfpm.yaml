@@ -66,3 +66,9 @@ scripts:
   postinstall: packaging/scripts/postinstall.sh
   preremove: packaging/scripts/preremove.sh
   postremove: packaging/scripts/postremove.sh
+
+# The release workflow signs the .rpm (dnf checks package signatures); local
+# and CI builds leave NFPM_RPM_KEY_FILE unset and build it unsigned.
+rpm:
+  signature:
+    key_file: ${NFPM_RPM_KEY_FILE}

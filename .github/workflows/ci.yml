@@ -159,6 +159,52 @@ jobs:
           FORMAT: ${{ matrix.format }}
         run: docker run --rm -v "$PWD:/src:ro" -e FORMAT "$IMAGE" sh /src/tests/packages/install-test.sh
 
+  repository:
+    name: Package repository on ${{ matrix.image }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["ubuntu:24.04", "debian:13", "fedora:43", "rockylinux/rockylinux:10"]
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # git describe needs the tags
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Install tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q apt-utils createrepo-c rpm
+
+      - name: Create a test signing key
+        run: |
+          gpg --batch --quiet --passphrase '' --quick-gen-key "linux-ha-agent test <test@example.invalid>" rsa3072 sign never
+          key=$(gpg --batch --with-colons --list-keys | awk -F: '/^fpr/ {print $10; exit}')
+          echo "REPO_SIGNING_KEY_ID=$key" >>"$GITHUB_ENV"
+          (umask 077 && gpg --batch --armor --export-secret-keys "$key" >"$RUNNER_TEMP/signing-key.asc")
+
+      - name: Build signed packages and the repository
+        run: |
+          NFPM_RPM_KEY_FILE="$RUNNER_TEMP/signing-key.asc" make packages GOARCH=amd64
+          sh packaging/repo/build.sh dist site http://127.0.0.1:8000
+
+      - name: Install with install.sh from the repository
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          (cd site && python3 -m http.server 8000 >/dev/null 2>&1 &)
+          timeout 10 sh -c 'until curl -fs http://127.0.0.1:8000/deb/InRelease >/dev/null; do sleep 1; done'
+          docker run --rm --network host -v "$PWD:/src:ro" -e LINUX_HA_AGENT_REPO_URL=http://127.0.0.1:8000 \
+            "$IMAGE" sh /src/tests/packages/repo-test.sh
+
   go-install:
     name: go install
     runs-on: ubuntu-24.04
