@@ -35,8 +35,8 @@ is a device in Home Assistant. Guests are linked to their host.
 | Container images | update | Images with a newer version in their registry; *Install* updates all containers |
 | Container image updates | sensor | Count, images as attributes |
 | Containers running | sensor | Total, engines and compose projects as attributes |
-| Container *name* | binary sensor | Running; image, engine, compose project and service as attributes |
-| Container *name* image | update | Installed and newest digest; *Install* updates just this container (compose service or podman auto-update) |
+| Container *name* | binary sensor | Running; image, tag, digest, engine, compose project and service as attributes |
+| Container *name* image | update | Installed and newest version as tag and short digest, `latest (3d5ef2653c7b)`; *Install* updates just this container (compose service or podman auto-update) |
 | Restart container *name* | button | Permission `restart_containers` |
 
 Container entities can be turned off with `checks.container_entities: false`.
@@ -57,11 +57,16 @@ ones above:
 
 | Entity | Type | Notes |
 | --- | --- | --- |
-| Image | update | Running and newest image fingerprint; image, compose project and service as attributes. *Install* rebuilds the container from the newer image, or runs incus-compose for its service |
+| Image | update | Running and newest version as tag and short registry digest, `16-alpine (3d5ef2653c7b)`; image, tag, digests, Incus fingerprint, compose project and service as attributes. *Install* rebuilds the container from the newer image, or runs incus-compose for its service |
 | Updates available | binary sensor | |
 | Upgrade running, Last upgrade, Last upgrade result | | As for machines |
 | Running, Platform | | Platform is *Incus OCI container* or *incus-compose service* |
 | Upgrade, Restart | button | No restore: upgrades rebuild (Incus refuses that with snapshots) or recreate (incus-compose) the container |
+
+Incus keeps only its own fingerprint of an image, not the registry digest.
+The agent remembers the digest whenever a check finds the running image to be
+the newest one, which covers every container it updated; until then the
+installed version shows the first 12 characters of the fingerprint instead.
 
 ## The host
 

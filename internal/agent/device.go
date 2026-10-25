@@ -45,6 +45,10 @@ type Device struct {
 	lastCommand *commands.Result
 	// commandRunning is set while a typed command runs.
 	commandRunning bool
+	// imageDigests maps the Incus fingerprints of an application
+	// container's running and newest image to their registry digests,
+	// which Incus does not keep. Persisted across restarts.
+	imageDigests map[string]string
 }
 
 // commandState renders a command result for the state.
@@ -152,6 +156,27 @@ func shortDigest(d string) string {
 	return d
 }
 
+// imageTag is the tag of an image reference: "latest" when none is given,
+// empty for references pinned to a digest or image IDs.
+func imageTag(ref string) string {
+	if ref == "" || strings.Contains(ref, "@") || strings.HasPrefix(ref, "sha256:") {
+		return ""
+	}
+	if i := strings.LastIndex(ref, ":"); i > strings.LastIndex(ref, "/") {
+		return ref[i+1:]
+	}
+	return "latest"
+}
+
+// imageVersion is how an image version shows in Home Assistant: the tag
+// with the short digest, "latest (3d5ef2653c7b)".
+func imageVersion(tag, digest string) string {
+	if tag == "" {
+		return shortDigest(digest)
+	}
+	return tag + " (" + shortDigest(digest) + ")"
+}
+
 // containerStates renders the per-container part of the state.
 func (d *Device) containerStates() map[string]any {
 	out := map[string]any{}
@@ -165,21 +190,29 @@ func (d *Device) containerStates() map[string]any {
 		}
 	}
 	for _, c := range d.Check.Containers {
-		installed := "unknown"
+		digest := ""
 		if digests := d.Check.LocalDigests[c.ImageID]; len(digests) > 0 {
-			installed = shortDigest(digests[0])
-		} else if c.ImageID != "" {
-			installed = shortDigest(c.ImageID)
+			digest = digests[0]
+		}
+		id := digest
+		if id == "" {
+			id = c.ImageID
+		}
+		tag := imageTag(c.Image)
+		installed := "unknown"
+		if id != "" {
+			installed = imageVersion(tag, id)
 		}
 		latest := installed
-		if digest, ok := newer[c.Name]; ok {
-			latest = shortDigest(digest)
+		latestDigest := digest
+		if newDigest, ok := newer[c.Name]; ok {
+			latest, latestDigest = imageVersion(tag, newDigest), newDigest
 		}
 		out[ha.ContainerKey(c.Engine, c.Name)] = map[string]any{
 			"running": c.Running(),
 			"info": map[string]any{
-				"engine": c.Engine, "image": c.Image, "state": c.State, "project": c.Project,
-				"service": c.Service, "update_available": latest != installed,
+				"engine": c.Engine, "image": c.Image, "tag": tag, "digest": digest, "latest_digest": latestDigest,
+				"state": c.State, "project": c.Project, "service": c.Service, "update_available": latest != installed,
 			},
 			"update": updateInfo{
 				InstalledVersion: strPtr(installed),
@@ -262,13 +295,20 @@ func (d *Device) state(extra map[string]any) map[string]any {
 		st["platform"] = guestKind(*d.Guest)
 	}
 	if app := d.app(); app != nil {
-		st["app"] = map[string]any{"image": app.Image, "compose_project": app.ComposeProject, "compose_service": app.ComposeService}
-		current := shortDigest(app.Fingerprint)
+		tag := imageTag(app.Image)
+		digest := d.imageDigests[app.Fingerprint]
+		attrs := map[string]any{
+			"image": app.Image, "tag": tag, "digest": digest, "latest_digest": digest, "fingerprint": app.Fingerprint,
+			"compose_project": app.ComposeProject, "compose_service": app.ComposeService,
+		}
+		st["app"] = attrs
+		current := d.appVersion(tag, app.Fingerprint)
 		u := updateInfo{Title: app.Image, InstalledVersion: strPtr(current), LatestVersion: strPtr(current), InProgress: d.Operation != ""}
 		if d.Check != nil && d.Check.App != nil {
-			st["app"].(map[string]any)["error"] = d.Check.App.Error
+			attrs["error"] = d.Check.App.Error
 			if d.appUpdate() {
-				u.LatestVersion = strPtr(shortDigest(d.Check.App.Latest))
+				attrs["latest_digest"] = d.imageDigests[d.Check.App.Latest]
+				u.LatestVersion = strPtr(d.appVersion(tag, d.Check.App.Latest))
 				st["image_update_list"] = []containers.ImageUpdate{{Image: app.Image, Digest: d.Check.App.Latest, Containers: []string{d.Name}, Managed: true}}
 			}
 			st["image_updates"] = d.pendingImages()
@@ -369,6 +409,16 @@ func (d *Device) state(extra map[string]any) map[string]any {
 		st[k] = v
 	}
 	return st
+}
+
+// appVersion is the version of an application container image with the
+// given Incus fingerprint: the tag with the registry digest, or with the
+// fingerprint while the digest is not known.
+func (d *Device) appVersion(tag, fingerprint string) string {
+	if digest := d.imageDigests[fingerprint]; digest != "" {
+		return imageVersion(tag, digest)
+	}
+	return imageVersion(tag, fingerprint)
 }
 
 func (d *Device) pendingUpdates() int {

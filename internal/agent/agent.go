@@ -528,7 +528,7 @@ func (a *Agent) handleAutoUpgrade(_ string, payload []byte) {
 func (a *Agent) saveState() {
 	a.mu.Lock()
 	st := persisted{AutoUpgrade: a.state.AutoUpgrade, LastRuns: map[string]*RunReport{},
-		Components: map[string]map[string]string{}, Discovery: map[string]ha.Device{}}
+		Components: map[string]map[string]string{}, Discovery: map[string]ha.Device{}, ImageDigests: map[string]map[string]string{}}
 	for id, d := range a.devices {
 		st.Devices = append(st.Devices, id)
 		if d.LastRun != nil {
@@ -539,6 +539,9 @@ func (a *Agent) saveState() {
 		}
 		if d.lastChecked != nil {
 			st.Discovery[id] = *d.lastChecked
+		}
+		if len(d.imageDigests) > 0 {
+			st.ImageDigests[id] = d.imageDigests
 		}
 	}
 	a.mu.Unlock()
@@ -699,7 +702,8 @@ func (a *Agent) syncGuests(ctx context.Context) {
 		d := a.devices[id]
 		if d == nil {
 			d = &Device{ID: id, Name: guestName(g), Guest: &g, Provider: f.p, Runner: f.p.Runner(g),
-				LastRun: a.state.LastRuns[id], components: a.state.Components[id], lastChecked: lastChecked(a.state, id)}
+				LastRun: a.state.LastRuns[id], components: a.state.Components[id], lastChecked: lastChecked(a.state, id),
+				imageDigests: a.state.ImageDigests[id]}
 			a.devices[id] = d
 			added = append(added, d)
 			continue

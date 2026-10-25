@@ -59,13 +59,18 @@ func replaceImage(e *env, key, fp string) {
 
 func TestOCIAppUpdate(t *testing.T) {
 	e := newEnvWith(t, nil, withApps(appGuest("nginx", guest.App{Image: "docker.io/library/nginx:1.27"})))
-	e.agent.registry = registry{"nginx:1.27": "sha256:digest-new", "fp:docker.io/library/nginx:1.27": newFP}
+	e.agent.registry = registry{"docker.io/library/nginx:1.27": "sha256:digest-new", "fp:docker.io/library/nginx:1.27": newFP}
 	e.command("lab1_nginx", ha.CmdCheck)
 
+	// The running image was never the newest while the agent watched, so
+	// only its fingerprint is known.
 	st := e.state(t, "lab1_nginx")
 	u := st["app_update"].(map[string]any)
-	if st["updates_available"] != true || u["installed_version"] != oldFP[:12] || u["latest_version"] != newFP[:12] || st["platform"] != "Incus OCI container" {
+	if st["updates_available"] != true || u["installed_version"] != "1.27 ("+oldFP[:12]+")" || u["latest_version"] != "1.27 (digest-new)" || st["platform"] != "Incus OCI container" {
 		t.Fatalf("state: %v", st)
+	}
+	if app := st["app"].(map[string]any); app["tag"] != "1.27" || app["digest"] != "" || app["latest_digest"] != "sha256:digest-new" || app["fingerprint"] != oldFP {
+		t.Errorf("app attributes: %v", app)
 	}
 	if e.state(t, "lab1")["image_updates_total"].(float64) < 1 {
 		t.Error("host total misses the app image")
@@ -103,6 +108,13 @@ func TestOCIAppUpdate(t *testing.T) {
 	last := st["last_run"].(map[string]any)
 	if st["updates_available"] != false || last["success"] != true || last["changed"] != true {
 		t.Fatalf("after upgrade: %v %v", st["updates_available"], last)
+	}
+	u = st["app_update"].(map[string]any)
+	if app := st["app"].(map[string]any); u["installed_version"] != "1.27 (digest-new)" || u["latest_version"] != u["installed_version"] || app["digest"] != "sha256:digest-new" {
+		t.Errorf("after upgrade the running digest must be known: %v %v", u, app)
+	}
+	if st, _ := loadState(e.cfg.StateFile); st.ImageDigests["lab1_nginx"][newFP] != "sha256:digest-new" {
+		t.Errorf("digest not persisted: %v", st.ImageDigests)
 	}
 
 	// Up to date: no rebuild.
