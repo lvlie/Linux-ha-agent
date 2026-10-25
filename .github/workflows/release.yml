@@ -108,6 +108,7 @@ jobs:
       contents: read
       pages: write
       id-token: write
-    uses: $/.github/workflows/repository.yml
+    # actionlint does not know the self-repository syntax ($/) yet.
+    uses: ./.github/workflows/repository.yml # zizmor: ignore[self-repository]
     secrets:
       REPO_SIGNING_KEY: ${{ secrets.REPO_SIGNING_KEY }}
