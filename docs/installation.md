@@ -41,6 +41,10 @@ less install.sh        # read it first
 sudo sh install.sh     # or: sudo sh install.sh v0.1.0
 ```
 
+It always checks the SHA-256 checksum. The signed build provenance is checked
+as well when the GitHub CLI 2.49 or newer is installed and logged in (`gh auth
+login`, or `GH_TOKEN` set); otherwise the script says why it skipped that.
+
 ## With Go
 
 With Go installed (1.26.7 or newer; older Go versions download it
