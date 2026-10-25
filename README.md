@@ -139,9 +139,11 @@ Containers, on hosts and inside guests:
 - **Incus OCI application containers** (Incus 6.3+, with skopeo and umoci on
   the host) are devices of their own. The agent asks the registry for the
   current image and computes its Incus fingerprint (the SHA-256 of the layer
-  digests), so an update is found without pulling it. Upgrading takes a
-  snapshot and rebuilds the instance from the newer image, like
-  `incus rebuild`: configuration, devices and volumes stay. Nothing runs
+  digests), so an update is found without pulling it. Upgrading rebuilds the
+  instance from the newer image, like `incus rebuild`: configuration, devices
+  and volumes stay, the root file system is replaced. Incus cannot rebuild an
+  instance that has snapshots, so the agent takes none (there is no restore
+  button) and reports instances with snapshots instead of updating them. Nothing runs
   inside these containers (many have no shell), so they get no package,
   system or command sensors.
 - Containers created by **incus-compose** are updated through incus-compose

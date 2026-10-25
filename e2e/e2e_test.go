@@ -322,7 +322,7 @@ func TestE2E(t *testing.T) {
 			t.Fatalf("freshly launched container: %v", st)
 		}
 		cmps := b.discovery(app)
-		if cmps["app_update"]["payload_install"] != "upgrade" || cmps["restore_snapshot"] == nil || cmps["kernel"] != nil || cmps["cmd_whoami"] != nil {
+		if cmps["app_update"]["payload_install"] != "upgrade" || cmps["restore_snapshot"] != nil || cmps["kernel"] != nil || cmps["cmd_whoami"] != nil {
 			t.Fatalf("entities: %v", cmps)
 		}
 
@@ -343,9 +343,7 @@ func TestE2E(t *testing.T) {
 		if id := incus(t, "config", "get", "oci-app", "image.id"); id != "library/busybox:latest" {
 			t.Errorf("image.id after the rebuild: %q", id)
 		}
-		if !strings.Contains(incus(t, "snapshot", "list", "oci-app", "--format", "csv"), "ha-agent-") {
-			t.Error("no pre-upgrade snapshot")
-		}
+
 		if state := incus(t, "list", "oci-app", "-c", "s", "-f", "csv"); state != "RUNNING" {
 			t.Errorf("not running after the rebuild: %s", state)
 		}

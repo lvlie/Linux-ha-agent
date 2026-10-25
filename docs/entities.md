@@ -61,7 +61,7 @@ ones above:
 | Updates available | binary sensor | |
 | Upgrade running, Last upgrade, Last upgrade result | | As for machines |
 | Running, Platform | | Platform is *Incus OCI container* or *incus-compose service* |
-| Upgrade, Restart, Restore pre-upgrade snapshot | button | Restore is not offered for incus-compose services (it recreates them) |
+| Upgrade, Restart | button | No restore: upgrades rebuild (Incus refuses that with snapshots) or recreate (incus-compose) the container |
 
 ## The host
 

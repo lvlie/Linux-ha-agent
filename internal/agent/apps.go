@@ -87,7 +87,7 @@ func (a *Agent) appInstallable(d *Device) bool {
 
 // upgradeApp updates an application container to the newest version of its
 // image: through incus-compose when it manages the container, otherwise by
-// rebuilding the instance from the registry after a snapshot.
+// rebuilding the instance from the registry.
 func (a *Agent) upgradeApp(ctx context.Context, d *Device, report *RunReport) {
 	a.mu.Lock()
 	g := *d.Guest
@@ -124,7 +124,11 @@ func (a *Agent) upgradeApp(ctx context.Context, d *Device, report *RunReport) {
 			return
 		}
 	}
-	if a.cfg.Guests.Snapshot && !a.snapshot(ctx, d, report) {
+	// Incus cannot rebuild an instance that has snapshots, so none is taken
+	// (the data of application containers belongs in volumes, which a
+	// rebuild keeps), and the user's own snapshots are left alone.
+	if snaps, err := d.Provider.Snapshots(ctx, g); err == nil && len(snaps) > 0 {
+		report.step("rebuild from "+app.Image, false, fmt.Errorf("the instance has %d snapshot(s), and Incus cannot rebuild an instance with snapshots; remove them to update it", len(snaps)), "")
 		return
 	}
 	err := rebuilder.RebuildApp(ctx, g, a.cfg.Guests.StopTimeout)

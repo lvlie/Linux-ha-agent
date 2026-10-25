@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lvlie/linux-ha-agent/internal/config"
 	"github.com/lvlie/linux-ha-agent/internal/guest"
@@ -78,7 +79,10 @@ func TestOCIAppUpdate(t *testing.T) {
 			t.Errorf("app container got machine entity %s", key)
 		}
 	}
-	for _, key := range []string{"upgrade", "reboot", "restore_snapshot", "running", "check"} {
+	if _, ok := cmps["restore_snapshot"]; ok {
+		t.Error("app containers are rebuilt, which Incus refuses with snapshots: no restore")
+	}
+	for _, key := range []string{"upgrade", "reboot", "running", "check"} {
 		if _, ok := cmps[key]; !ok {
 			t.Errorf("app container misses %s", key)
 		}
@@ -92,9 +96,8 @@ func TestOCIAppUpdate(t *testing.T) {
 	if len(e.incus.Rebuilds) != 1 || e.incus.Rebuilds[0] != "default/nginx" {
 		t.Fatalf("rebuilds: %v", e.incus.Rebuilds)
 	}
-	snaps, _ := e.incus.Snapshots(context.Background(), guest.Guest{Name: "nginx", Project: "default"})
-	if len(snaps) != 1 || !strings.HasPrefix(snaps[0].Name, SnapshotPrefix) {
-		t.Errorf("no pre-upgrade snapshot: %v", snaps)
+	if snaps, _ := e.incus.Snapshots(context.Background(), guest.Guest{Name: "nginx", Project: "default"}); len(snaps) != 0 {
+		t.Errorf("snapshot taken, which makes the rebuild fail: %v", snaps)
 	}
 	st = e.state(t, "lab1_nginx")
 	last := st["last_run"].(map[string]any)
@@ -106,6 +109,25 @@ func TestOCIAppUpdate(t *testing.T) {
 	e.command("lab1_nginx", ha.CmdUpgrade)
 	if len(e.incus.Rebuilds) != 1 {
 		t.Error("rebuilt although up to date")
+	}
+}
+
+func TestOCIAppWithSnapshotsIsNotRebuilt(t *testing.T) {
+	e := newEnvWith(t, nil, withApps(appGuest("nginx", guest.App{Image: "docker.io/library/nginx:1.27"})))
+	e.agent.registry = registry{"fp:docker.io/library/nginx:1.27": newFP}
+	nginx := guest.Guest{Name: "nginx", Project: "default"}
+	_ = e.incus.CreateSnapshot(context.Background(), nginx, "mine", time.Time{})
+	e.command("lab1_nginx", ha.CmdUpgrade)
+	if len(e.incus.Rebuilds) != 0 {
+		t.Fatal("rebuilt an instance with snapshots")
+	}
+	last := e.state(t, "lab1_nginx")["last_run"].(map[string]any)
+	steps := last["steps"].([]any)
+	if last["success"] != false || !strings.Contains(steps[len(steps)-1].(map[string]any)["detail"].(string), "snapshots") {
+		t.Errorf("last run: %v", last)
+	}
+	if snaps, _ := e.incus.Snapshots(context.Background(), nginx); len(snaps) != 1 {
+		t.Error("the user's snapshot must be kept")
 	}
 }
 

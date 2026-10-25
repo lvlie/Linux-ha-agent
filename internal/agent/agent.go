@@ -173,8 +173,9 @@ func (a *Agent) features(d *Device) ha.Features {
 	return ha.Features{
 		Upgrade: p.Upgrade,
 		Reboot:  reboot,
-		// incus-compose recreates its instances, which removes their snapshots.
-		Restore:  p.Restore && a.cfg.Guests.Snapshot && len(a.providers) > 0 && (d.app() == nil || d.app().ComposeProject == ""),
+		// Application containers are rebuilt or recreated on upgrades, which
+		// is impossible with or removes snapshots, so they have none to restore.
+		Restore:  p.Restore && a.cfg.Guests.Snapshot && len(a.providers) > 0 && d.app() == nil,
 		Schedule: a.schedule != nil,
 
 		RestartContainers: p.RestartContainers,
