@@ -1,22 +1,62 @@
 #!/bin/sh
-# Install or update linux-ha-agent from a GitHub release.
+# Install or update linux-ha-agent.
 #   sh install.sh [version]     (default: latest, e.g. v0.2.0)
-# Uses the .deb or .rpm package where apt or dnf is available, otherwise
-# installs the binary and systemd unit. Verifies the SHA-256 checksum and,
-# when the GitHub CLI is installed, the signed build provenance.
+# Where apt or dnf is available, adds the signed package repository on GitHub
+# Pages and installs the package from it, so later versions come with the
+# normal system updates. Otherwise installs the binary and systemd unit from
+# a GitHub release, verifying the SHA-256 checksum and, when the GitHub CLI is
+# installed, the signed build provenance.
 set -eu
 
 REPO="lvlie/linux-ha-agent"
+REPO_URL="${LINUX_HA_AGENT_REPO_URL:-https://lvlie.github.io/Linux-ha-agent}"
 TAG="${1:-latest}"
+version="${TAG#v}"
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "run as root" >&2
   exit 1
 fi
 
+if command -v apt-get >/dev/null 2>&1; then
+  export DEBIAN_FRONTEND=noninteractive
+  install -d -m 0755 /etc/apt/keyrings
+  curl -fsSL -o /etc/apt/keyrings/linux-ha-agent.asc "$REPO_URL/linux-ha-agent.asc"
+  cat >/etc/apt/sources.list.d/linux-ha-agent.sources <<EOF
+Types: deb
+URIs: $REPO_URL/deb/
+Suites: ./
+Signed-By: /etc/apt/keyrings/linux-ha-agent.asc
+EOF
+  apt-get update -q
+  pkg=linux-ha-agent
+  [ "$TAG" = latest ] || pkg="linux-ha-agent=$version-1"
+  apt-get install -y --allow-downgrades "$pkg"
+  linux-ha-agent -version
+  exit 0
+fi
+
+if command -v dnf >/dev/null 2>&1; then
+  cat >/etc/yum.repos.d/linux-ha-agent.repo <<EOF
+[linux-ha-agent]
+name=linux-ha-agent
+baseurl=$REPO_URL/rpm/
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=$REPO_URL/linux-ha-agent.asc
+EOF
+  pkg=linux-ha-agent
+  [ "$TAG" = latest ] || pkg="linux-ha-agent-$version-1"
+  # -y also imports the repository key on first use.
+  dnf -y install "$pkg"
+  linux-ha-agent -version
+  exit 0
+fi
+
 case "$(uname -m)" in
-  x86_64) arch=amd64 rpmarch=x86_64 ;;
-  aarch64 | arm64) arch=arm64 rpmarch=aarch64 ;;
+  x86_64) arch=amd64 ;;
+  aarch64 | arm64) arch=arm64 ;;
   *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
 esac
 
@@ -25,16 +65,8 @@ if [ "$TAG" = latest ]; then
   TAG=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest")
   TAG="${TAG##*/}"
 fi
-version="${TAG#v}"
 base="https://github.com/$REPO/releases/download/$TAG"
-
-if command -v apt-get >/dev/null 2>&1; then
-  asset="linux-ha-agent_${version}-1_${arch}.deb"
-elif command -v dnf >/dev/null 2>&1; then
-  asset="linux-ha-agent-${version}-1.${rpmarch}.rpm"
-else
-  asset="linux-ha-agent-linux-$arch"
-fi
+asset="linux-ha-agent-linux-$arch"
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -54,21 +86,15 @@ else
   gh attestation verify "$tmp/$asset" --repo "$REPO"
 fi
 
-case "$asset" in
-  *.deb) DEBIAN_FRONTEND=noninteractive apt-get install -y "$tmp/$asset" ;;
-  *.rpm) dnf -y install "$tmp/$asset" ;;
-  *)
-    install -m 0755 "$tmp/$asset" /usr/local/bin/linux-ha-agent
-    install -d -m 0750 /etc/linux-ha-agent
-    if [ ! -e /etc/linux-ha-agent/config.yaml ]; then
-      curl -fsSL -o /etc/linux-ha-agent/config.yaml "$base/config.example.yaml"
-      chmod 0640 /etc/linux-ha-agent/config.yaml
-    fi
-    curl -fsSL "$base/linux-ha-agent.service" |
-      sed 's|/usr/bin/linux-ha-agent|/usr/local/bin/linux-ha-agent|g' >/etc/systemd/system/linux-ha-agent.service
-    systemctl daemon-reload
-    systemctl try-restart linux-ha-agent.service || true
-    echo "edit /etc/linux-ha-agent/config.yaml, then: systemctl enable --now linux-ha-agent"
-    ;;
-esac
+install -m 0755 "$tmp/$asset" /usr/local/bin/linux-ha-agent
+install -d -m 0750 /etc/linux-ha-agent
+if [ ! -e /etc/linux-ha-agent/config.yaml ]; then
+  curl -fsSL -o /etc/linux-ha-agent/config.yaml "$base/config.example.yaml"
+  chmod 0640 /etc/linux-ha-agent/config.yaml
+fi
+curl -fsSL "$base/linux-ha-agent.service" |
+  sed 's|/usr/bin/linux-ha-agent|/usr/local/bin/linux-ha-agent|g' >/etc/systemd/system/linux-ha-agent.service
+systemctl daemon-reload
+systemctl try-restart linux-ha-agent.service || true
+echo "edit /etc/linux-ha-agent/config.yaml, then: systemctl enable --now linux-ha-agent"
 linux-ha-agent -version
