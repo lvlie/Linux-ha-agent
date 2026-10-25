@@ -67,7 +67,7 @@ func App(config map[string]string) *guest.App {
 	}
 	app := &guest.App{
 		Fingerprint:    config["volatile.base_image"],
-		Architecture:   config["image.architecture"],
+		Architecture:   ociArchitecture(config["image.architecture"]),
 		ComposeProject: config["user.label.incus-compose.project"],
 		ComposeService: config["user.label.incus-compose.service"],
 	}
@@ -87,6 +87,21 @@ func App(config map[string]string) *guest.App {
 		app.Image = repo + ":" + tag
 	}
 	return app
+}
+
+// ociArchitectures maps Incus architecture names to OCI ones.
+var ociArchitectures = map[string]string{
+	"x86_64": "amd64", "i686": "386", "aarch64": "arm64", "armv7l": "arm", "armv6l": "arm",
+	"ppc64le": "ppc64le", "s390x": "s390x", "riscv64": "riscv64", "loongarch64": "loong64",
+}
+
+// ociArchitecture returns the OCI name of an architecture, which Incus
+// stores under its own name ("x86_64" for "amd64").
+func ociArchitecture(arch string) string {
+	if oci, ok := ociArchitectures[arch]; ok {
+		return oci
+	}
+	return arch
 }
 
 // RebuildApp implements guest.AppProvider: the instance is rebuilt from its

@@ -364,7 +364,7 @@ func TestE2E(t *testing.T) {
 			return st != nil && st["last_check"] != nil
 		})
 		st := b.state(svc)
-		if st["platform"] != "incus-compose service" || st["app"].(map[string]any)["compose_project"] != "icapp" {
+		if st["platform"] != "incus-compose service" || st["app"].(map[string]any)["compose_project"] != "icapp" || st["check_error"] != "" {
 			t.Fatalf("state: %v", st)
 		}
 		cmps := b.discovery(svc)
