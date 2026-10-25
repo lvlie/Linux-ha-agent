@@ -42,10 +42,16 @@ echo "downloading $asset ($TAG)"
 curl -fsSL -o "$tmp/$asset" "$base/$asset"
 curl -fsSL -o "$tmp/SHA256SUMS" "$base/SHA256SUMS"
 (cd "$tmp" && grep " $asset\$" SHA256SUMS | sha256sum -c -)
-if command -v gh >/dev/null 2>&1; then
-  gh attestation verify "$tmp/$asset" --repo "$REPO"
-else
+# gh attestation needs GitHub CLI 2.49+ (distributions ship older ones, e.g.
+# 2.45 on Ubuntu 24.04) and a login; a failed verification aborts.
+if ! command -v gh >/dev/null 2>&1; then
   echo "note: install the GitHub CLI to also verify the build provenance"
+elif ! gh attestation verify --help >/dev/null 2>&1; then
+  echo "note: GitHub CLI $(gh --version | sed -n 's/^gh version \([^ ]*\).*/\1/p') cannot verify the build provenance (2.49+ needed), skipped"
+elif ! gh auth status >/dev/null 2>&1; then
+  echo "note: log in with 'gh auth login' to also verify the build provenance, skipped"
+else
+  gh attestation verify "$tmp/$asset" --repo "$REPO"
 fi
 
 case "$asset" in
