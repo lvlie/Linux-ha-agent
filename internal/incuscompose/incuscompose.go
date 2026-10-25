@@ -101,12 +101,26 @@ func ServiceImages(dir string) map[string]string {
 
 // Upgrade pulls the newest image of one service and recreates its instance
 // when the image changed (`incus-compose up --pull always`), in the project
-// directory on the host.
+// directory on the host. The agent's INCUS_* variables are passed on, so
+// incus-compose settings such as INCUS_COMPOSE_NO_HEALTHD can be set on the
+// service; commands otherwise get a minimal environment.
 func Upgrade(ctx context.Context, r runner.Runner, dir, service string) error {
 	if !runner.Has(ctx, r, "incus-compose") {
 		return errors.New("incus-compose is not installed")
 	}
-	_, err := runner.Check(ctx, r, runner.Command("sh", "-c", `cd "$1" && shift && exec "$@"`, "sh", dir,
-		"incus-compose", "up", "--detach", "--pull", "always", "--no-deps", service))
+	cmd := runner.Command("sh", "-c", `cd "$1" && shift && exec "$@"`, "sh", dir,
+		"incus-compose", "up", "--detach", "--pull", "always", "--no-deps", service)
+	_, err := runner.Check(ctx, r, cmd.WithEnv(incusEnv()...))
 	return err
+}
+
+// incusEnv returns the agent's INCUS_* variables as key, value pairs.
+func incusEnv() []string {
+	var kv []string
+	for _, e := range os.Environ() {
+		if k, v, ok := strings.Cut(e, "="); ok && strings.HasPrefix(k, "INCUS_") {
+			kv = append(kv, k, v)
+		}
+	}
+	return kv
 }

@@ -69,6 +69,8 @@ services:
 }
 
 func TestUpgrade(t *testing.T) {
+	t.Setenv("INCUS_COMPOSE_NO_HEALTHD", "true")
+	t.Setenv("NOT_INCUS", "x")
 	f := (&runner.Fake{}).On("sh incus-compose", runner.Result{}).On("incus-compose up", runner.Result{})
 	if err := Upgrade(context.Background(), f, "/root/web", "app"); err != nil {
 		t.Fatal(err)
@@ -82,6 +84,13 @@ func TestUpgrade(t *testing.T) {
 		if last[i] != want[i] {
 			t.Fatalf("got %q", last)
 		}
+	}
+	env := f.Calls[len(f.Calls)-1].Env
+	if env["INCUS_COMPOSE_NO_HEALTHD"] != "true" {
+		t.Errorf("INCUS_COMPOSE_NO_HEALTHD not passed on: %v", env)
+	}
+	if _, ok := env["NOT_INCUS"]; ok {
+		t.Errorf("unrelated variable passed on: %v", env)
 	}
 	if err := Upgrade(context.Background(), &runner.Fake{}, "/root/web", "app"); err == nil {
 		t.Error("expected an error without incus-compose")
