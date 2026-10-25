@@ -79,6 +79,7 @@ func App(config map[string]string) *guest.App {
 	switch _, digest, pinned := strings.Cut(id, "@"); {
 	case pinned:
 		app.Image = repo + "@" + digest
+		app.Digest = digest
 	default:
 		tag := "latest"
 		if i := strings.LastIndex(id, ":"); i > strings.LastIndex(id, "/") {

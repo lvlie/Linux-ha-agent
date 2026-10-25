@@ -44,6 +44,30 @@ func TestFind(t *testing.T) {
 	}
 }
 
+func TestServiceImages(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "compose.yaml"), `name: media
+services:
+  sonarr:
+    image: ghcr.io/linuxserver/sonarr:latest
+  db:
+    image: "docker.io/library/postgres:16-alpine"
+  templated:
+    image: ghcr.io/me/app:${TAG:-latest}
+  built:
+    build: .
+`)
+	write(t, filepath.Join(dir, "docker-compose.yml"), "services: {sonarr: {image: ignored}}\n")
+	got := ServiceImages(dir)
+	want := map[string]string{"sonarr": "ghcr.io/linuxserver/sonarr:latest", "db": "docker.io/library/postgres:16-alpine"}
+	if len(got) != len(want) || got["sonarr"] != want["sonarr"] || got["db"] != want["db"] {
+		t.Errorf("got %v, want %v", got, want)
+	}
+	if got := ServiceImages(filepath.Join(dir, "missing")); len(got) != 0 {
+		t.Errorf("missing directory: %v", got)
+	}
+}
+
 func TestUpgrade(t *testing.T) {
 	f := (&runner.Fake{}).On("sh incus-compose", runner.Result{}).On("incus-compose up", runner.Result{})
 	if err := Upgrade(context.Background(), f, "/root/web", "app"); err != nil {

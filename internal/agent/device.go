@@ -312,10 +312,14 @@ func (d *Device) state(extra map[string]any) map[string]any {
 		st["platform"] = guestKind(*d.Guest)
 	}
 	if app := d.app(); app != nil {
-		tag := imageTag(app.Image)
+		image := app.Image
+		if d.Check != nil && d.Check.App != nil && d.Check.App.Image != "" {
+			image = d.Check.App.Image // with the tag from the compose file
+		}
+		tag := imageTag(image)
 		digest := d.digest(app.Fingerprint)
 		attrs := map[string]any{
-			"image": app.Image, "tag": tag, "digest": digest, "latest_digest": digest,
+			"image": image, "tag": tag, "digest": digest, "latest_digest": digest,
 			"compose_project": app.ComposeProject, "compose_service": app.ComposeService,
 		}
 		if app.ByDigest {
@@ -326,14 +330,14 @@ func (d *Device) state(extra map[string]any) map[string]any {
 			attrs["fingerprint"] = app.Fingerprint
 		}
 		st["app"] = attrs
-		current := d.appVersion(app.Image, app.Fingerprint)
-		u := updateInfo{Title: app.Image, InstalledVersion: strPtr(current), LatestVersion: strPtr(current), InProgress: d.Operation != ""}
+		current := d.appVersion(image, app.Fingerprint)
+		u := updateInfo{Title: image, InstalledVersion: strPtr(current), LatestVersion: strPtr(current), InProgress: d.Operation != ""}
 		if d.Check != nil && d.Check.App != nil {
 			attrs["error"] = d.Check.App.Error
 			if d.appUpdate() {
 				attrs["latest_digest"] = d.digest(d.Check.App.Latest)
-				u.LatestVersion = strPtr(d.appVersion(app.Image, d.Check.App.Latest))
-				st["image_update_list"] = []containers.ImageUpdate{{Image: app.Image, Digest: d.Check.App.Latest, Containers: []string{d.Name}, Managed: true}}
+				u.LatestVersion = strPtr(d.appVersion(image, d.Check.App.Latest))
+				st["image_update_list"] = []containers.ImageUpdate{{Image: image, Digest: d.Check.App.Latest, Containers: []string{d.Name}, Managed: true}}
 			}
 			st["image_updates"] = d.pendingImages()
 		}
@@ -448,10 +452,16 @@ func (d *Device) appVersion(ref, fingerprint string) string {
 // digest is the registry digest of an application container image with the
 // given fingerprint, or empty when not known.
 func (d *Device) digest(fingerprint string) string {
-	if app := d.app(); app != nil && app.ByDigest {
+	app := d.app()
+	switch {
+	case app != nil && app.ByDigest:
 		return fingerprint
+	case d.imageDigests[fingerprint] != "":
+		return d.imageDigests[fingerprint]
+	case app != nil && fingerprint == app.Fingerprint:
+		return app.Digest
 	}
-	return d.imageDigests[fingerprint]
+	return ""
 }
 
 func (d *Device) pendingUpdates() int {

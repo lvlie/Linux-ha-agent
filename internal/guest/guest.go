@@ -55,6 +55,9 @@ type App struct {
 	ByDigest bool
 	// NoImage explains why Image is empty.
 	NoImage string
+	// Digest is the registry digest of the running image where the
+	// reference it was launched with is pinned to one (incus-compose).
+	Digest string
 }
 
 // AppProvider is implemented by platforms that run application containers.

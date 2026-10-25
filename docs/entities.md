@@ -64,6 +64,8 @@ these entities instead of the package, system and command ones above:
 | Running, Platform | | Platform is *Incus OCI container*, *incus-compose service* or *Proxmox OCI container* |
 | Upgrade, Restart | button | No restore: upgrades rebuild (Incus refuses that with snapshots) or recreate (incus-compose) the container. No *Upgrade* on Proxmox VE |
 
+For incus-compose services the image and tag are taken from the compose
+file, since incus-compose launches them from the digest it resolved.
 Incus keeps only its own fingerprint of an image, not the registry digest.
 The agent remembers the digest whenever a check finds the running image to be
 the newest one, which covers every container it updated; until then the
