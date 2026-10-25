@@ -263,6 +263,38 @@ func TestStoppedOCIAppIsUpdated(t *testing.T) {
 	}
 }
 
+// incus-compose launches services from the digest it resolved, so Incus
+// only knows the pinned reference: the tag comes from the compose file.
+func TestComposeAppTracksTheComposeFileTag(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "postgres")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte("services: {postgres: {image: docker.io/library/postgres:16-trixie}}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pinned := guest.App{Image: "docker.io/library/postgres@sha256:running", Digest: "sha256:running", ComposeProject: "postgres", ComposeService: "postgres"}
+	e := newEnvWith(t, func(c *config.Config) { c.Incus.ComposeDirs = []string{filepath.Dir(dir)} },
+		withApps(appGuest("postgres", pinned)))
+	e.agent.registry = registry{
+		"fp:docker.io/library/postgres:16-trixie": newFP, "docker.io/library/postgres:16-trixie": "sha256:newer",
+		// What checking the pinned reference would find: never an update.
+		"fp:docker.io/library/postgres@sha256:running": oldFP, "docker.io/library/postgres@sha256:running": "sha256:running",
+	}
+	e.command("lab1_postgres", ha.CmdCheck)
+
+	st := e.state(t, "lab1_postgres")
+	u, app := st["app_update"].(map[string]any), st["app"].(map[string]any)
+	if st["updates_available"] != true || u["title"] != "docker.io/library/postgres:16-trixie" ||
+		u["installed_version"] != "docker.io/library/postgres:16-trixie (running)" ||
+		u["latest_version"] != "docker.io/library/postgres:16-trixie (newer)" {
+		t.Fatalf("state: %v", st)
+	}
+	if app["tag"] != "16-trixie" || app["digest"] != "sha256:running" || app["latest_digest"] != "sha256:newer" {
+		t.Errorf("attributes: %v", app)
+	}
+}
+
 func TestStoppedComposeAppIsNotStarted(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "web")
 	if err := os.MkdirAll(dir, 0o755); err != nil {

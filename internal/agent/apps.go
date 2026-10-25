@@ -18,6 +18,7 @@ const composeCacheTTL = time.Minute
 
 // AppCheck is the image check of an OCI application container.
 type AppCheck struct {
+	// Image is the reference checked; see Agent.trackedImage.
 	Image string `json:"image"`
 	// Installed and Latest are Incus image fingerprints. Installed is the
 	// image at check time; the guest's current one may differ since.
@@ -90,13 +91,17 @@ func (a *Agent) appCheck(ctx context.Context, d *Device) {
 	}
 	app := *current
 	a.mu.Unlock()
-	c := &Check{Time: a.now(), App: &AppCheck{Image: app.Image, Installed: app.Fingerprint}}
+	image := app.Image
+	if image != "" {
+		image = a.trackedImage(app)
+	}
+	c := &Check{Time: a.now(), App: &AppCheck{Image: image, Installed: app.Fingerprint}}
 	resolver, ok := a.registry.(containers.FingerprintResolver)
 	switch {
-	case app.Image == "":
+	case image == "":
 		c.App.Error = noImage(app)
 	case app.ByDigest && a.cfg.Checks.ContainerImages && a.registry != nil:
-		latest, err := a.registry.Digest(ctx, app.Image)
+		latest, err := a.registry.Digest(ctx, image)
 		if err != nil {
 			c.App.Error = err.Error()
 		}
@@ -104,14 +109,14 @@ func (a *Agent) appCheck(ctx context.Context, d *Device) {
 	case app.ByDigest || !a.cfg.Checks.ContainerImages || !ok:
 		c.App.Error = "image checks are off"
 	default:
-		latest, err := resolver.Fingerprint(ctx, app.Image, app.Architecture)
+		latest, err := resolver.Fingerprint(ctx, image, app.Architecture)
 		if err != nil {
 			c.App.Error = err.Error()
 		}
 		c.App.Latest = latest
 		if err == nil {
 			// Cached by Fingerprint: no second request.
-			c.App.LatestDigest, _ = a.registry.Digest(ctx, app.Image)
+			c.App.LatestDigest, _ = a.registry.Digest(ctx, image)
 		}
 	}
 	if app.ComposeProject != "" {
@@ -173,10 +178,36 @@ func (a *Agent) composeDir(project string) (string, bool) {
 	defer a.composeMu.Unlock()
 	if a.composeProjects == nil || a.now().Sub(a.composeTime) >= composeCacheTTL {
 		a.composeProjects = incuscompose.Find(a.cfg.Incus.ComposeDirs)
+		a.composeImages = map[string]map[string]string{}
 		a.composeTime = a.now()
 	}
 	dir, ok := a.composeProjects[project]
 	return dir, ok
+}
+
+// trackedImage is the image reference an application container is checked
+// against: for an incus-compose service the one in its compose file, as
+// incus-compose launches from the digest it resolved and the tag is lost;
+// otherwise the reference the container was launched with.
+func (a *Agent) trackedImage(app guest.App) string {
+	if app.ComposeProject == "" {
+		return app.Image
+	}
+	dir, ok := a.composeDir(app.ComposeProject)
+	if !ok {
+		return app.Image
+	}
+	a.composeMu.Lock()
+	defer a.composeMu.Unlock()
+	images, ok := a.composeImages[dir]
+	if !ok {
+		images = incuscompose.ServiceImages(dir)
+		a.composeImages[dir] = images
+	}
+	if image := images[app.ComposeService]; image != "" {
+		return image
+	}
+	return app.Image
 }
 
 // appInstallable reports whether the agent can update an app's image.
@@ -233,7 +264,7 @@ func (a *Agent) upgradeApp(ctx context.Context, d *Device, report *RunReport, al
 		// so none is taken; volumes are kept.
 		err := incuscompose.Upgrade(ctx, a.local, dir, app.ComposeService)
 		changed := a.refreshGuest(ctx, d, app.Fingerprint)
-		report.step(fmt.Sprintf("incus-compose %s/%s", app.ComposeProject, app.ComposeService), changed, err, imageDetail(changed, app.Image))
+		report.step(fmt.Sprintf("incus-compose %s/%s", app.ComposeProject, app.ComposeService), changed, err, imageDetail(changed, a.trackedImage(*app)))
 		return
 	}
 

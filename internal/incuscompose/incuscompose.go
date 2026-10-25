@@ -69,6 +69,36 @@ func ProjectName(dir string, compose []byte) string {
 	return strings.TrimLeft(invalid.ReplaceAllString(strings.ToLower(name), ""), "_-")
 }
 
+// ServiceImages returns the image of every service in a project directory,
+// as written in its compose file. incus-compose launches instances from the
+// digest it resolved, so the tag is only found here. Images with variables
+// are left out: their value depends on an environment the agent does not
+// have.
+func ServiceImages(dir string) map[string]string {
+	images := map[string]string{}
+	for _, f := range Files {
+		data, err := os.ReadFile(filepath.Join(dir, f)) //nolint:gosec // configured directories
+		if err != nil {
+			continue
+		}
+		var file struct {
+			Services map[string]struct {
+				Image string `yaml:"image"`
+			} `yaml:"services"`
+		}
+		if yaml.Unmarshal(data, &file) != nil {
+			return images
+		}
+		for name, s := range file.Services {
+			if s.Image != "" && !strings.Contains(s.Image, "$") {
+				images[name] = s.Image
+			}
+		}
+		return images
+	}
+	return images
+}
+
 // Upgrade pulls the newest image of one service and recreates its instance
 // when the image changed (`incus-compose up --pull always`), in the project
 // directory on the host.

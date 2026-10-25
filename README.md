@@ -164,7 +164,12 @@ Containers, on hosts and inside guests:
   its subdirectories) and matches them by project name. incus-compose
   recreates instances, so no snapshot is taken and there is no restore button.
   A stopped service is not updated, since `incus-compose up` would start it.
-  incus-compose itself needs Incus listening on the network
+  incus-compose launches each service from the digest it resolved, so Incus
+  does not know the tag: the image is checked as written in the compose file
+  (`postgres:16-alpine`), and the digest Incus has is the running one. An
+  image with variables (`${TAG}`), or a project not found in
+  `incus.compose_dirs`, can only be checked against that digest, which never
+  shows an update. incus-compose itself needs Incus listening on the network
   (`core.https_address`) for its image cache, and an Incus OCI remote named
   after each registry it pulls from (for example `docker.io`).
 - New images are detected by comparing local image digests with the registry

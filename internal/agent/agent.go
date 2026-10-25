@@ -63,6 +63,9 @@ type Agent struct {
 	composeMu       sync.Mutex
 	composeProjects map[string]string
 	composeTime     time.Time
+	// composeImages caches incuscompose.ServiceImages by directory for as
+	// long as composeProjects.
+	composeImages map[string]map[string]string
 
 	mu      sync.Mutex
 	devices map[string]*Device

@@ -1,6 +1,9 @@
 package incus
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestApp(t *testing.T) {
 	if App(map[string]string{"image.os": "Ubuntu"}) != nil {
@@ -25,6 +28,9 @@ func TestApp(t *testing.T) {
 		app := App(cfg)
 		if app == nil || app.Image != c.image || app.Fingerprint != "fp" || app.Architecture != "amd64" {
 			t.Errorf("%s: %+v", name, app)
+		}
+		if pinned := strings.Contains(c.image, "@"); pinned != (app.Digest == "sha256:abc") || !pinned && app.Digest != "" {
+			t.Errorf("%s: digest %q", name, app.Digest)
 		}
 	}
 	app := App(map[string]string{"image.type": "oci", "image.description": "ghcr.io/me/app (OCI)", "image.id": "ghcr.io/me/app:v2",
