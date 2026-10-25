@@ -192,10 +192,12 @@ func (d *Device) containerStates() map[string]any {
 	return out
 }
 
-// updateInfo is the payload of a Home Assistant update entity.
+// updateInfo is the payload of a Home Assistant update entity. Unknown
+// versions are left out: Home Assistant rejects null and keeps the previous
+// value when a key is missing.
 type updateInfo struct {
-	InstalledVersion *string `json:"installed_version"`
-	LatestVersion    *string `json:"latest_version"`
+	InstalledVersion *string `json:"installed_version,omitempty"`
+	LatestVersion    *string `json:"latest_version,omitempty"`
 	Title            string  `json:"title"`
 	ReleaseSummary   string  `json:"release_summary,omitempty"`
 	InProgress       bool    `json:"in_progress"`
