@@ -86,6 +86,8 @@ if [ "${OCI:-0}" = 1 ]; then
     incus delete --force oci-app 2>/dev/null || true
     sleep $((i * 5))
   done
+  # incus-compose's image cache needs Incus listening on the network.
+  incus config set core.https_address=127.0.0.1:8443
   mkdir -p /root/icapp
   cat >/root/icapp/compose.yaml <<YAML
 name: icapp
