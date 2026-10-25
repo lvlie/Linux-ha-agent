@@ -689,7 +689,7 @@ func (a *Agent) syncGuests(ctx context.Context) {
 		}
 	}
 	seen := map[string]bool{a.host.ID: true}
-	var added, started []*Device
+	var added, started, reimaged []*Device
 	a.mu.Lock()
 	for _, f := range all {
 		g := f.g
@@ -709,11 +709,15 @@ func (a *Agent) syncGuests(ctx context.Context) {
 			continue
 		}
 		wasRunning := d.running()
+		imageChanged := d.Guest.App != nil && g.App != nil && *d.Guest.App != *g.App
 		d.Guest = &g
 		d.Provider = f.p
 		d.Runner = f.p.Runner(g)
-		if !wasRunning && g.Running() {
+		switch {
+		case !wasRunning && g.Running():
 			started = append(started, d)
+		case imageChanged:
+			reimaged = append(reimaged, d)
 		}
 	}
 	var removed []string
@@ -745,6 +749,9 @@ func (a *Agent) syncGuests(ctx context.Context) {
 	}
 	for _, d := range started {
 		a.enqueue(op{kind: ha.CmdCheck, device: d.ID, trigger: "started"})
+	}
+	for _, d := range reimaged {
+		a.enqueue(op{kind: ha.CmdCheck, device: d.ID, trigger: "image changed"})
 	}
 	a.PublishAll(false)
 	if len(added) > 0 || len(removed) > 0 {

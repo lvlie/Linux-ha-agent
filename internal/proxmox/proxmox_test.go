@@ -17,6 +17,7 @@ const (
 	lxcList = `[
  {"cpu":0.01,"cpus":2,"maxmem":2147483648,"name":"web","pid":1234,"status":"running","type":"lxc","uptime":3600,"vmid":"101"},
  {"name":"media","status":"stopped","type":"lxc","vmid":"104"},
+ {"name":"sonarr","status":"running","type":"lxc","vmid":"105"},
  {"name":"debian-tmpl","status":"stopped","template":1,"type":"lxc","vmid":"900"}
 ]`
 	qemuList = `[
@@ -59,6 +60,8 @@ func TestGuests(t *testing.T) {
 	f := (&runner.Fake{}).
 		On("pvesh get /nodes/pve1/lxc --output-format json", runner.Result{Stdout: lxcList}).
 		On("pvesh get /nodes/pve1/qemu --output-format json", runner.Result{Stdout: qemuList}).
+		On("cat /etc/pve/nodes/pve1/lxc/105.conf", runner.Result{Stdout: sonarrConf}).
+		On("cat /etc/pve/nodes/pve1/lxc/", runner.Result{Stdout: "arch: amd64\nostype: ubuntu\n"}).
 		On("pvesh get /nodes/pve1/qemu/200/config", runner.Result{Stdout: `{"agent":"0","ostype":"win11"}`}).
 		On("pvesh get /nodes/pve1/qemu/201/config", runner.Result{Stdout: `{"agent":"enabled=1,fstrim_cloned_disks=1"}`})
 	guests, err := node(t, f).Guests(context.Background())
@@ -72,6 +75,7 @@ func TestGuests(t *testing.T) {
 	want := []string{
 		"201|docker-vm|virtual-machine|running|proxmox|",
 		"104|media|container|stopped|proxmox|",
+		"105|sonarr|container|running|proxmox|",
 		"202|stopped-vm|virtual-machine|stopped|proxmox|",
 		"101|web|container|running|proxmox|",
 		"200|win11|virtual-machine|running|proxmox|the QEMU guest agent is not enabled for this VM",
@@ -82,8 +86,77 @@ func TestGuests(t *testing.T) {
 	if f.Ran("qemu/202/config") {
 		t.Error("stopped VMs need no agent check")
 	}
-	if guests[3].Key() != "101" {
-		t.Errorf("key %q", guests[3].Key())
+	if guests[4].Key() != "101" {
+		t.Errorf("key %q", guests[4].Key())
+	}
+}
+
+func TestGuestsFindOCIApps(t *testing.T) {
+	f := (&runner.Fake{}).
+		On("pvesh get /nodes/pve1/lxc --output-format json", runner.Result{Stdout: lxcList}).
+		On("pvesh get /nodes/pve1/qemu --output-format json", runner.Result{Stdout: "[]"}).
+		On("cat /etc/pve/nodes/pve1/lxc/105.conf", runner.Result{Stdout: sonarrConf}).
+		On("cat /etc/pve/nodes/pve1/lxc/", runner.Result{Stdout: "arch: amd64\nostype: ubuntu\n"})
+	guests, err := node(t, f).Guests(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range guests {
+		switch {
+		case g.ID == "105":
+			if g.App == nil || *g.App != (guest.App{Image: "ghcr.io/linuxserver/sonarr:latest", ByDigest: true}) {
+				t.Errorf("sonarr app: %+v", g.App)
+			}
+		case g.App != nil:
+			t.Errorf("%s is a system container: %+v", g.Name, g.App)
+		}
+	}
+}
+
+// sonarrConf is the configuration file of a container created from an OCI
+// image, with the image in its notes; a snapshot section follows.
+const sonarrConf = `#Sonarr, created from an OCI image.
+#
+#image%3A ` + "`ghcr.io/linuxserver/sonarr%3Alatest`" + `
+arch: amd64
+cmode: console
+entrypoint: /init
+env: PUID=1000
+hostname: sonarr
+ostype: unmanaged
+rootfs: local-lvm:vm-105-disk-0,size=8G
+
+[before-update]
+#image%3A ghcr.io/linuxserver/sonarr%3A4
+entrypoint: /old-init
+`
+
+func TestApp(t *testing.T) {
+	const pinned = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	noImage := `add a line "image: <reference>" to the notes of the container`
+	for _, tc := range []struct {
+		entrypoint, notes string
+		want              *guest.App
+	}{
+		{"", "image: nginx", nil},
+		{"/sbin/init", "image: nginx", nil},
+		{"/init", "", &guest.App{ByDigest: true, NoImage: noImage}},
+		{"/init", "Image:   docker.io/library/nginx:1.27  ", &guest.App{Image: "docker.io/library/nginx:1.27", ByDigest: true}},
+		{"/init", "image: nginx:1.27@" + pinned, &guest.App{Image: "nginx:1.27", Fingerprint: pinned, ByDigest: true}},
+		{"/init", "image: nginx@" + pinned, &guest.App{Image: "nginx@" + pinned, Fingerprint: pinned, ByDigest: true}},
+		{"/init", "image: two words\nimage: nginx", &guest.App{Image: "nginx", ByDigest: true}},
+	} {
+		got := App(tc.entrypoint, tc.notes)
+		if (got == nil) != (tc.want == nil) || got != nil && *got != *tc.want {
+			t.Errorf("App(%q, %q) = %+v, want %+v", tc.entrypoint, tc.notes, got, tc.want)
+		}
+	}
+}
+
+func TestParseConfig(t *testing.T) {
+	entrypoint, notes := ParseConfig(sonarrConf)
+	if entrypoint != "/init" || notes != "Sonarr, created from an OCI image.\n\nimage: `ghcr.io/linuxserver/sonarr:latest`\n" {
+		t.Errorf("entrypoint %q, notes %q", entrypoint, notes)
 	}
 }
 
@@ -211,7 +284,8 @@ func TestWatchLifecyclePolls(t *testing.T) {
 			defer mu.Unlock()
 			return runner.Result{Stdout: `[{"name":"web","status":"` + status + `","vmid":"101"}]`}
 		}).
-		On("pvesh get /nodes/pve1/qemu --output-format json", runner.Result{Stdout: "[]"})
+		On("pvesh get /nodes/pve1/qemu --output-format json", runner.Result{Stdout: "[]"}).
+		On("cat /etc/pve/nodes/pve1/lxc/101.conf", runner.Result{Stdout: "ostype: ubuntu\n"})
 	p := node(t, f)
 	p.poll = 5 * time.Millisecond
 	changes := make(chan struct{}, 10)

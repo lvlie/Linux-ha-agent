@@ -49,24 +49,28 @@ Container entities can be turned off with `checks.container_entities: false`.
 | Platform | diagnostic sensor | Incus container/VM, Proxmox LXC/VM |
 | Restore pre-upgrade snapshot | button | Permission `restore` |
 
-## Incus OCI application containers
+## OCI application containers
 
-Containers launched from OCI images (`incus launch docker:...`, incus-compose)
-are guests with these entities instead of the package, system and command
-ones above:
+Containers launched from OCI images (`incus launch docker:...`, incus-compose,
+and Proxmox VE containers created from an OCI image with an `image:` line in
+their notes, see the [README](../README.md#proxmox-ve-notes)) are guests with
+these entities instead of the package, system and command ones above:
 
 | Entity | Type | Notes |
 | --- | --- | --- |
-| Image | update | Running and newest version as image, tag and short registry digest, `docker.io/library/postgres:16-alpine (3d5ef2653c7b)`; image, tag, digests, Incus fingerprint, compose project and service as attributes. *Install* rebuilds the container from the newer image, or runs incus-compose for its service |
+| Image | update | Running and newest version as image, tag and short registry digest, `docker.io/library/postgres:16-alpine (3d5ef2653c7b)`; image, tag, digests, Incus fingerprint, compose project and service as attributes (on Proxmox VE `digest_assumed` instead of the fingerprint). *Install* rebuilds the container from the newer image, or runs incus-compose for its service; none on Proxmox VE |
 | Updates available | binary sensor | |
 | Upgrade running, Last upgrade, Last upgrade result | | As for machines |
-| Running, Platform | | Platform is *Incus OCI container* or *incus-compose service* |
-| Upgrade, Restart | button | No restore: upgrades rebuild (Incus refuses that with snapshots) or recreate (incus-compose) the container |
+| Running, Platform | | Platform is *Incus OCI container*, *incus-compose service* or *Proxmox OCI container* |
+| Upgrade, Restart | button | No restore: upgrades rebuild (Incus refuses that with snapshots) or recreate (incus-compose) the container. No *Upgrade* on Proxmox VE |
 
 Incus keeps only its own fingerprint of an image, not the registry digest.
 The agent remembers the digest whenever a check finds the running image to be
 the newest one, which covers every container it updated; until then the
 installed version shows the first 12 characters of the fingerprint instead.
+Proxmox VE keeps neither: the digest comes from the `image:` line in the
+notes, or is assumed to be the newest one at the first check
+(`digest_assumed` is then true).
 
 ## The host
 

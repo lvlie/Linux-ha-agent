@@ -88,6 +88,9 @@ host. The full list is in [docs/entities.md](docs/entities.md).
 - **Incus OCI application containers** (`incus launch docker:nginx`, and
   incus-compose): each one is a device with an image update entity that
   rebuilds it from the newer image, or updates it through incus-compose.
+- **Proxmox VE OCI application containers** (Proxmox VE 9.1+): each one is a
+  device whose image is checked against its registry; updates are reported,
+  Proxmox has no way to update them in place.
 - **Actions**: check, upgrade (packages, containers, single containers, or
   the host and all guests), reboot or restart, restore the pre-upgrade
   snapshot, and an automatic upgrade schedule with an on/off switch.
@@ -193,6 +196,23 @@ the guest list current and trigger a check when a guest starts.
   check fail with 401.
 - Debian does not create `/var/run/reboot-required`; a pending reboot is
   detected by comparing the newest installed kernel with the running one.
+- **OCI application containers** (created from an OCI image, Proxmox VE 9.1+)
+  are recognised by their entrypoint and get the entities of
+  [application containers](docs/entities.md#oci-application-containers)
+  instead of running commands inside. Proxmox records neither the image nor
+  its digest, so add the image to the container's **Notes**:
+
+  ```text
+  image: ghcr.io/linuxserver/sonarr:latest
+  ```
+
+  The agent assumes that the image was the newest when it first checks the
+  container, and reports when the registry has a newer one. To state the
+  running version exactly, add its digest:
+  `image: ghcr.io/linuxserver/sonarr:latest@sha256:...`; update that line when
+  you recreate the container from a newer image. Updates are only reported:
+  Proxmox cannot rebuild a container from a newer image, so there is no
+  *Install* action and *Upgrade host and guests* leaves them alone.
 - **VMs** need the QEMU guest agent: enable it in the VM options and install
   `qemu-guest-agent` inside. VMs without it (and non-Linux VMs) are listed
   with their state, but are not checked or upgraded.

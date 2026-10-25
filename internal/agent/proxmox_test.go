@@ -75,7 +75,10 @@ func newPVENode(ct101, vm201 *runner.Fake) *pveNode {
 		On("pvesh get /nodes/pve1/lxc --output-format json", runner.Result{Stdout: `[
 			{"name":"web","status":"running","vmid":"101"},
 			{"name":"media","status":"stopped","vmid":"104"},
+			{"name":"sonarr","status":"running","vmid":"105"},
 			{"name":"tmpl","status":"stopped","template":1,"vmid":"900"}]`}).
+		On("cat /etc/pve/nodes/pve1/lxc/105.conf", runner.Result{Stdout: "#image%3A ghcr.io/linuxserver/sonarr%3Alatest\nentrypoint: /init\nostype: unmanaged\n"}).
+		On("cat /etc/pve/nodes/pve1/lxc/", runner.Result{Stdout: "ostype: ubuntu\n"}).
 		On("pvesh get /nodes/pve1/qemu --output-format json", runner.Result{Stdout: `[
 			{"name":"win11","status":"running","vmid":200},
 			{"name":"docker-vm","status":"running","vmid":201}]`}).
@@ -133,9 +136,10 @@ func TestProxmoxNode(t *testing.T) {
 	cfg.StateFile = filepath.Join(t.TempDir(), "state.json")
 	cfg.Permissions = config.Permissions{Upgrade: true, Reboot: true, Restore: true}
 	mem := mqtt.NewMemory()
+	reg := registry{"nginx:1.27": "sha256:digest-new", "ghcr.io/linuxserver/sonarr:latest": "sha256:sonarr-1"}
 	a, err := New(Options{
 		Config: cfg, MQTT: mem, Providers: []guest.Provider{provider}, Local: n.local,
-		Registry: registry{"nginx:1.27": "sha256:digest-new"}, Hostname: "pve1", Logger: quiet,
+		Registry: reg, Hostname: "pve1", Logger: quiet,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -149,7 +153,7 @@ func TestProxmoxNode(t *testing.T) {
 	e := &env{agent: a, mqtt: mem}
 
 	configs := mem.RetainedTopics("homeassistant/device/pve1/+/config")
-	if len(configs) != 5 { // host, web, media, win11, docker-vm; no template
+	if len(configs) != 6 { // host, web, media, sonarr, win11, docker-vm; no template
 		t.Fatalf("discovery: %v", configs)
 	}
 	if mdl := e.discovery(t, "pve1_web")["dev"].(map[string]any)["mdl"]; mdl != "Ubuntu 24.04.3 LTS (Proxmox LXC)" {
@@ -163,6 +167,35 @@ func TestProxmoxNode(t *testing.T) {
 	}
 	if st := e.state(t, "pve1_win11"); !strings.Contains(st["check_error"].(string), "guest agent is not enabled") {
 		t.Errorf("win11 state %v", st)
+	}
+
+	// The OCI application container: checked against the registry, nothing
+	// runs inside it, and the image it was created from is assumed to run.
+	sonarr := e.state(t, "pve1_sonarr")
+	u, app := sonarr["app_update"].(map[string]any), sonarr["app"].(map[string]any)
+	if sonarr["platform"] != "Proxmox OCI container" || sonarr["check_error"] != "" || sonarr["updates_available"] != false ||
+		u["installed_version"] != "ghcr.io/linuxserver/sonarr:latest (sonarr-1)" || u["latest_version"] != u["installed_version"] ||
+		app["digest"] != "sha256:sonarr-1" || app["digest_assumed"] != true {
+		t.Fatalf("sonarr state: %v", sonarr)
+	}
+	cmps := components(e.discovery(t, "pve1_sonarr"))
+	for _, key := range []string{"upgrade", "restore_snapshot", "system_update"} {
+		if _, ok := cmps[key]; ok {
+			t.Errorf("sonarr cannot be updated by the agent, but got %s", key)
+		}
+	}
+	if c := cmps["app_update"].(map[string]any); c["payload_install"] != nil {
+		t.Errorf("sonarr image entity has an install action: %v", c)
+	}
+	if n.local.Ran("pct exec 105") {
+		t.Error("commands ran inside the application container")
+	}
+	reg["ghcr.io/linuxserver/sonarr:latest"] = "sha256:sonarr-2"
+	e.command("pve1_sonarr", ha.CmdCheck)
+	sonarr = e.state(t, "pve1_sonarr")
+	u = sonarr["app_update"].(map[string]any)
+	if sonarr["updates_available"] != true || u["installed_version"] != "ghcr.io/linuxserver/sonarr:latest (sonarr-1)" || u["latest_version"] != "ghcr.io/linuxserver/sonarr:latest (sonarr-2)" {
+		t.Fatalf("sonarr with a newer image: %v", sonarr)
 	}
 
 	e.command("pve1_web", ha.CmdUpgrade)
@@ -192,5 +225,10 @@ func TestProxmoxNode(t *testing.T) {
 	e.command("pve1_web", ha.CmdRestore)
 	if len(n.rollbacks) != 1 || !strings.HasPrefix(n.rollbacks[0], "pct rollback 101 "+SnapshotPrefix) || !strings.HasSuffix(n.rollbacks[0], "--start 1") {
 		t.Errorf("rollbacks %v", n.rollbacks)
+	}
+
+	e.command("pve1", ha.CmdUpgradeAll)
+	if st := e.state(t, "pve1_sonarr"); st["last_run"] != nil {
+		t.Errorf("upgrade of host and guests must leave sonarr alone: %v", st["last_run"])
 	}
 }

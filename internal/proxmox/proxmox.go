@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -114,6 +115,16 @@ func (p *Provider) Guests(ctx context.Context) ([]guest.Guest, error) {
 			if g.Name == "" {
 				g.Name = kind + "-" + g.ID
 			}
+			if kind == kindLXC {
+				// The file instead of pvesh: this runs every poll for every
+				// container, and pvesh is a Perl process each time.
+				path := "/etc/pve/nodes/" + p.node + "/lxc/" + g.ID + ".conf"
+				res, err := runner.Check(ctx, p.local, runner.Command("cat", path))
+				if err != nil {
+					return nil, err
+				}
+				g.App = App(ParseConfig(res.Stdout))
+			}
 			if kind == kindQEMU {
 				g.Type = guest.VirtualMachine
 				if g.Running() {
@@ -131,6 +142,64 @@ func (p *Provider) Guests(ctx context.Context) ([]guest.Guest, error) {
 	}
 	slices.SortFunc(guests, func(a, b guest.Guest) int { return strings.Compare(a.Name, b.Name) })
 	return guests, nil
+}
+
+// ParseConfig returns the entrypoint and notes (description) of a container
+// from its configuration file. The notes are the comment lines at the top,
+// with ':', '%' and unusual characters percent-encoded; snapshots and
+// pending changes follow in [sections].
+func ParseConfig(conf string) (entrypoint, notes string) {
+	var b strings.Builder
+	for _, line := range strings.Split(conf, "\n") {
+		switch {
+		case strings.HasPrefix(line, "["):
+			return entrypoint, b.String()
+		case strings.HasPrefix(line, "#"):
+			text, err := url.PathUnescape(line[1:])
+			if err != nil {
+				text = line[1:]
+			}
+			b.WriteString(text + "\n")
+		default:
+			if key, value, ok := strings.Cut(line, ":"); ok && key == "entrypoint" {
+				entrypoint = strings.TrimSpace(value)
+			}
+		}
+	}
+	return entrypoint, b.String()
+}
+
+// App describes an OCI application container from its entrypoint and notes;
+// nil for system containers. Proxmox VE sets the entrypoint from the image
+// when it is not /sbin/init, but records neither the image nor its digest,
+// so they come from an "image: <reference>" line in the notes, optionally
+// with "@sha256:..." for the digest of the running image.
+func App(entrypoint, notes string) *guest.App {
+	if entrypoint == "" || entrypoint == "/sbin/init" {
+		return nil
+	}
+	app := &guest.App{ByDigest: true, NoImage: `add a line "image: <reference>" to the notes of the container`}
+	for _, line := range strings.Split(notes, "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), ":")
+		if !ok || !strings.EqualFold(strings.TrimSpace(key), "image") {
+			continue
+		}
+		ref := strings.Trim(strings.TrimSpace(value), "`")
+		if ref == "" || strings.ContainsAny(ref, " \t") {
+			continue
+		}
+		app.Image, app.NoImage = ref, ""
+		// "repo:tag@sha256:..." tracks the tag and runs that digest; a
+		// reference pinned to a digest without a tag stays pinned.
+		if name, digest, pinned := strings.Cut(ref, "@"); pinned {
+			app.Fingerprint = digest
+			if i := strings.LastIndex(name, ":"); i > strings.LastIndex(name, "/") {
+				app.Image = name
+			}
+		}
+		break
+	}
+	return app
 }
 
 func (p *Provider) agentEnabled(ctx context.Context, id string) (bool, error) {
@@ -358,6 +427,10 @@ func (p *Provider) WatchLifecycle(ctx context.Context, fn func()) error {
 		var b strings.Builder
 		for _, g := range guests {
 			fmt.Fprintf(&b, "%s/%s/%s/%s;", g.ID, g.Name, g.Status, g.Unmanageable)
+			if g.App != nil {
+				// Notes edited: the app is checked against its new image.
+				fmt.Fprintf(&b, "%s@%s;", g.App.Image, g.App.Fingerprint)
+			}
 		}
 		if last != "" && b.String() != last {
 			fn()

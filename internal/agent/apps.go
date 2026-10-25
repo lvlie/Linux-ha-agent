@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"time"
 
 	"github.com/lvlie/linux-ha-agent/internal/containers"
@@ -44,11 +45,36 @@ func (d *Device) appUpdate() bool {
 	return app != nil && d.Check != nil && d.Check.App.UpdateAvailable(app.Fingerprint)
 }
 
+// app is the guest's application container, if it is one. Where the
+// platform does not know the digest of the running image, it is the one
+// assumed at the first check.
 func (d *Device) app() *guest.App {
-	if d.Guest == nil {
+	if d.Guest == nil || d.Guest.App == nil {
 		return nil
 	}
-	return d.Guest.App
+	app := d.Guest.App
+	if app.ByDigest && app.Fingerprint == "" {
+		if digest := d.imageDigests[assumedKey(app.Image)]; digest != "" {
+			filled := *app
+			filled.Fingerprint = digest
+			return &filled
+		}
+	}
+	return app
+}
+
+// assumedKey is the Device.imageDigests key of the digest assumed for the
+// running image of an application container on a platform that does not
+// record it; per image reference, so that it is assumed anew when the
+// reference changes.
+func assumedKey(image string) string { return "assumed " + image }
+
+// noImage explains why an application container cannot be checked.
+func noImage(app guest.App) string {
+	if app.NoImage != "" {
+		return app.NoImage
+	}
+	return "the instance has no image information"
 }
 
 // appCheck compares the image of an application container with its registry.
@@ -68,8 +94,14 @@ func (a *Agent) appCheck(ctx context.Context, d *Device) {
 	resolver, ok := a.registry.(containers.FingerprintResolver)
 	switch {
 	case app.Image == "":
-		c.App.Error = "the instance has no image information"
-	case !a.cfg.Checks.ContainerImages || !ok:
+		c.App.Error = noImage(app)
+	case app.ByDigest && a.cfg.Checks.ContainerImages && a.registry != nil:
+		latest, err := a.registry.Digest(ctx, app.Image)
+		if err != nil {
+			c.App.Error = err.Error()
+		}
+		c.App.Latest, c.App.LatestDigest = latest, latest
+	case app.ByDigest || !a.cfg.Checks.ContainerImages || !ok:
 		c.App.Error = "image checks are off"
 	default:
 		latest, err := resolver.Fingerprint(ctx, app.Image, app.Architecture)
@@ -89,6 +121,11 @@ func (a *Agent) appCheck(ctx context.Context, d *Device) {
 	a.mu.Lock()
 	d.Check = c
 	changed := d.rememberDigest(c.App.Latest, c.App.LatestDigest)
+	if app.ByDigest && app.Fingerprint == "" && c.App.LatestDigest != "" {
+		// The platform does not say which version runs: assume the newest.
+		d.setImageDigest(assumedKey(app.Image), c.App.LatestDigest)
+		changed = true
+	}
 	a.mu.Unlock()
 	if changed {
 		a.saveState()
@@ -107,11 +144,25 @@ func (d *Device) rememberDigest(fingerprint, digest string) bool {
 		return false
 	}
 	keep := map[string]string{fingerprint: digest}
-	if running, ok := d.imageDigests[app.Fingerprint]; ok {
-		keep[app.Fingerprint] = running
+	for _, key := range []string{app.Fingerprint, assumedKey(app.Image)} {
+		if v, ok := d.imageDigests[key]; ok {
+			keep[key] = v
+		}
 	}
 	d.imageDigests = keep
 	return true
+}
+
+// setImageDigest sets one entry of d.imageDigests. The map is replaced, not
+// changed, because saveState marshals it without holding a.mu. Callers hold
+// a.mu.
+func (d *Device) setImageDigest(key, digest string) {
+	m := maps.Clone(d.imageDigests)
+	if m == nil {
+		m = map[string]string{}
+	}
+	m[key] = digest
+	d.imageDigests = m
 }
 
 // composeDir finds the directory of an incus-compose project. The projects
@@ -164,7 +215,7 @@ func (a *Agent) upgradeApp(ctx context.Context, d *Device, report *RunReport, al
 		return
 	}
 	if app.Image == "" {
-		report.step("image", false, errors.New("the instance has no image information"), "")
+		report.step("image", false, errors.New(noImage(*app)), "")
 		return
 	}
 
@@ -188,7 +239,7 @@ func (a *Agent) upgradeApp(ctx context.Context, d *Device, report *RunReport, al
 
 	rebuilder, ok := d.Provider.(guest.AppProvider)
 	if !ok {
-		report.step("image", false, fmt.Errorf("%s cannot rebuild application containers", g.Platform), "")
+		report.step("image", false, fmt.Errorf("%s cannot update application containers; recreate it from the newer image", g.Platform), "")
 		return
 	}
 	latest, err := a.latestFingerprint(ctx, app)

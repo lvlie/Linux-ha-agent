@@ -92,6 +92,8 @@ func guestKind(g guest.Guest) string {
 	switch {
 	case g.App != nil && g.App.ComposeProject != "":
 		return "incus-compose service"
+	case g.App != nil && g.Platform == "proxmox":
+		return "Proxmox OCI container"
 	case g.App != nil:
 		return "Incus OCI container"
 	case g.Platform == "proxmox" && g.Type == guest.VirtualMachine:
@@ -311,10 +313,17 @@ func (d *Device) state(extra map[string]any) map[string]any {
 	}
 	if app := d.app(); app != nil {
 		tag := imageTag(app.Image)
-		digest := d.imageDigests[app.Fingerprint]
+		digest := d.digest(app.Fingerprint)
 		attrs := map[string]any{
-			"image": app.Image, "tag": tag, "digest": digest, "latest_digest": digest, "fingerprint": app.Fingerprint,
+			"image": app.Image, "tag": tag, "digest": digest, "latest_digest": digest,
 			"compose_project": app.ComposeProject, "compose_service": app.ComposeService,
+		}
+		if app.ByDigest {
+			// Not recorded by the platform: the newest digest when the
+			// container was first checked.
+			attrs["digest_assumed"] = digest != "" && d.Guest.App.Fingerprint == ""
+		} else {
+			attrs["fingerprint"] = app.Fingerprint
 		}
 		st["app"] = attrs
 		current := d.appVersion(app.Image, app.Fingerprint)
@@ -322,7 +331,7 @@ func (d *Device) state(extra map[string]any) map[string]any {
 		if d.Check != nil && d.Check.App != nil {
 			attrs["error"] = d.Check.App.Error
 			if d.appUpdate() {
-				attrs["latest_digest"] = d.imageDigests[d.Check.App.Latest]
+				attrs["latest_digest"] = d.digest(d.Check.App.Latest)
 				u.LatestVersion = strPtr(d.appVersion(app.Image, d.Check.App.Latest))
 				st["image_update_list"] = []containers.ImageUpdate{{Image: app.Image, Digest: d.Check.App.Latest, Containers: []string{d.Name}, Managed: true}}
 			}
@@ -427,13 +436,22 @@ func (d *Device) state(extra map[string]any) map[string]any {
 }
 
 // appVersion is the version of an application container image with the
-// given Incus fingerprint: the image with the registry digest, or with the
+// given fingerprint: the image with the registry digest, or with the
 // fingerprint while the digest is not known.
 func (d *Device) appVersion(ref, fingerprint string) string {
-	if digest := d.imageDigests[fingerprint]; digest != "" {
+	if digest := d.digest(fingerprint); digest != "" {
 		return imageVersion(ref, digest)
 	}
 	return imageVersion(ref, fingerprint)
+}
+
+// digest is the registry digest of an application container image with the
+// given fingerprint, or empty when not known.
+func (d *Device) digest(fingerprint string) string {
+	if app := d.app(); app != nil && app.ByDigest {
+		return fingerprint
+	}
+	return d.imageDigests[fingerprint]
 }
 
 func (d *Device) pendingUpdates() int {
