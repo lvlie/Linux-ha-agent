@@ -36,7 +36,7 @@ is a device in Home Assistant. Guests are linked to their host.
 | Container image updates | sensor | Count, images as attributes |
 | Containers running | sensor | Total, engines and compose projects as attributes |
 | Container *name* | binary sensor | Running; image, tag, digest, engine, compose project and service as attributes |
-| Container *name* image | update | Installed and newest version as tag and short digest, `latest (3d5ef2653c7b)`; *Install* updates just this container (compose service or podman auto-update) |
+| Container *name* image | update | Installed and newest version as image, tag and short digest, `nginx:latest (3d5ef2653c7b)`; *Install* updates just this container (compose service or podman auto-update) |
 | Restart container *name* | button | Permission `restart_containers` |
 
 Container entities can be turned off with `checks.container_entities: false`.
@@ -57,7 +57,7 @@ ones above:
 
 | Entity | Type | Notes |
 | --- | --- | --- |
-| Image | update | Running and newest version as tag and short registry digest, `16-alpine (3d5ef2653c7b)`; image, tag, digests, Incus fingerprint, compose project and service as attributes. *Install* rebuilds the container from the newer image, or runs incus-compose for its service |
+| Image | update | Running and newest version as image, tag and short registry digest, `docker.io/library/postgres:16-alpine (3d5ef2653c7b)`; image, tag, digests, Incus fingerprint, compose project and service as attributes. *Install* rebuilds the container from the newer image, or runs incus-compose for its service |
 | Updates available | binary sensor | |
 | Upgrade running, Last upgrade, Last upgrade result | | As for machines |
 | Running, Platform | | Platform is *Incus OCI container* or *incus-compose service* |

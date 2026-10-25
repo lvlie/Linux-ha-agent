@@ -66,7 +66,7 @@ func TestOCIAppUpdate(t *testing.T) {
 	// only its fingerprint is known.
 	st := e.state(t, "lab1_nginx")
 	u := st["app_update"].(map[string]any)
-	if st["updates_available"] != true || u["installed_version"] != "1.27 ("+oldFP[:12]+")" || u["latest_version"] != "1.27 (digest-new)" || st["platform"] != "Incus OCI container" {
+	if st["updates_available"] != true || u["installed_version"] != "docker.io/library/nginx:1.27 ("+oldFP[:12]+")" || u["latest_version"] != "docker.io/library/nginx:1.27 (digest-new)" || st["platform"] != "Incus OCI container" {
 		t.Fatalf("state: %v", st)
 	}
 	if app := st["app"].(map[string]any); app["tag"] != "1.27" || app["digest"] != "" || app["latest_digest"] != "sha256:digest-new" || app["fingerprint"] != oldFP {
@@ -110,7 +110,7 @@ func TestOCIAppUpdate(t *testing.T) {
 		t.Fatalf("after upgrade: %v %v", st["updates_available"], last)
 	}
 	u = st["app_update"].(map[string]any)
-	if app := st["app"].(map[string]any); u["installed_version"] != "1.27 (digest-new)" || u["latest_version"] != u["installed_version"] || app["digest"] != "sha256:digest-new" {
+	if app := st["app"].(map[string]any); u["installed_version"] != "docker.io/library/nginx:1.27 (digest-new)" || u["latest_version"] != u["installed_version"] || app["digest"] != "sha256:digest-new" {
 		t.Errorf("after upgrade the running digest must be known: %v %v", u, app)
 	}
 	if st, _ := loadState(e.cfg.StateFile); st.ImageDigests["lab1_nginx"][newFP] != "sha256:digest-new" {

@@ -77,7 +77,7 @@ func TestContainerEntities(t *testing.T) {
 	ctr := e.state(t, "lab1_web")["ctr"].(map[string]any)[webCtr].(map[string]any)
 	update := ctr["update"].(map[string]any)
 	info := ctr["info"].(map[string]any)
-	if ctr["running"] != true || update["installed_version"] != "1.27 (digest-old)" || update["latest_version"] != "1.27 (digest-new)" ||
+	if ctr["running"] != true || update["installed_version"] != "nginx:1.27 (digest-old)" || update["latest_version"] != "nginx:1.27 (digest-new)" ||
 		info["tag"] != "1.27" || info["digest"] != "sha256:digest-old" || info["latest_digest"] != "sha256:digest-new" {
 		t.Fatalf("container state: %v", ctr)
 	}
@@ -225,6 +225,21 @@ func TestImageTag(t *testing.T) {
 	} {
 		if got := imageTag(ref); got != want {
 			t.Errorf("imageTag(%q) = %q, want %q", ref, got, want)
+		}
+	}
+}
+
+func TestImageVersion(t *testing.T) {
+	for ref, want := range map[string]string{
+		"ghcr.io/linuxserver/sonarr:latest":      "ghcr.io/linuxserver/sonarr:latest (3d5ef2653c7b)",
+		"ghcr.io/linuxserver/sonarr":             "ghcr.io/linuxserver/sonarr:latest (3d5ef2653c7b)",
+		"localhost:5000/app":                     "localhost:5000/app:latest (3d5ef2653c7b)",
+		"docker.io/library/postgres:16-alpine":   "docker.io/library/postgres:16-alpine (3d5ef2653c7b)",
+		"docker.io/library/nginx@sha256:abc0123": "docker.io/library/nginx (3d5ef2653c7b)",
+		"sha256:0123456789abcdef":                "3d5ef2653c7b",
+	} {
+		if got := imageVersion(ref, "sha256:3d5ef2653c7b0000"); got != want {
+			t.Errorf("imageVersion(%q) = %q, want %q", ref, got, want)
 		}
 	}
 }
