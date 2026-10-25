@@ -108,6 +108,6 @@ jobs:
       contents: read
       pages: write
       id-token: write
-    uses: ./.github/workflows/repository.yml
+    uses: $/.github/workflows/repository.yml
     secrets:
       REPO_SIGNING_KEY: ${{ secrets.REPO_SIGNING_KEY }}

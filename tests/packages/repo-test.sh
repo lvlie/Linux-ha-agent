@@ -25,7 +25,9 @@ if command -v apt-get >/dev/null 2>&1; then
   test -f /etc/apt/sources.list.d/linux-ha-agent.sources
   # apt-get update only warns about a bad signature; fail on any warning.
   apt-get update 2>&1 | tee /tmp/update.log
-  ! grep -E '^(W|E):' /tmp/update.log
+  if grep -E '^(W|E):' /tmp/update.log; then
+    exit 1
+  fi
   apt-cache policy linux-ha-agent | grep -F "$LINUX_HA_AGENT_REPO_URL"
 else
   test -f /etc/yum.repos.d/linux-ha-agent.repo

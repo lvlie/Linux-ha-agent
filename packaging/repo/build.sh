@@ -83,4 +83,8 @@ sudo dnf install linux-ha-agent</pre>
 <p>Signing key: <code>$key</code></p>
 EOF
 
-echo "repository built in $out: $(ls "$out/deb" | grep -c '\.deb$') .deb, $(ls "$out/rpm" | grep -c '\.rpm$') .rpm"
+set -- "$out"/deb/*.deb
+debs=$#
+set -- "$out"/rpm/*.rpm
+[ -e "$1" ] || shift
+echo "repository built in $out: $debs .deb, $# .rpm"
