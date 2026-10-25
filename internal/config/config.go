@@ -78,6 +78,9 @@ type Incus struct {
 	Enabled  string   `yaml:"enabled"`
 	Socket   string   `yaml:"socket"`
 	Projects []string `yaml:"projects"`
+	// ComposeDirs are searched (with their direct subdirectories) for the
+	// compose files of incus-compose projects.
+	ComposeDirs []string `yaml:"compose_dirs"`
 }
 
 // Proxmox VE settings.
@@ -258,7 +261,7 @@ func Default() Config {
 			SnapshotKeep: 7 * 24 * time.Hour,
 			StopTimeout:  2 * time.Minute,
 		},
-		Incus:   Incus{Enabled: "auto"},
+		Incus:   Incus{Enabled: "auto", ComposeDirs: []string{"/root"}},
 		Proxmox: Proxmox{Enabled: "auto", PollInterval: time.Minute},
 		Checks:  Checks{Interval: 6 * time.Hour, ContainerImages: true, StatsInterval: 5 * time.Minute, ContainerEntities: true},
 		Upgrade: Upgrade{

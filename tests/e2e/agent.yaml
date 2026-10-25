@@ -7,6 +7,7 @@ host:
   name: e2e-host
 guests:
   snapshot_expiry: 1h
+  restart_timeout: 20s
 checks:
   interval: 1h
 upgrade:

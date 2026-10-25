@@ -85,6 +85,9 @@ host. The full list is in [docs/entities.md](docs/entities.md).
   running sensor, an update entity that pulls the newer image and recreates
   just that container, and a restart button; per machine the number of
   running containers and of newer images.
+- **Incus OCI application containers** (`incus launch docker:nginx`, and
+  incus-compose): each one is a device with an image update entity that
+  rebuilds it from the newer image, or updates it through incus-compose.
 - **Actions**: check, upgrade (packages, containers, single containers, or
   the host and all guests), reboot or restart, restore the pre-upgrade
   snapshot, and an automatic upgrade schedule with an on/off switch.
@@ -133,6 +136,26 @@ Containers, on hosts and inside guests:
   actually changed. `podman compose` and `podman-compose` both work.
 - Podman containers labelled `io.containers.autoupdate` are updated with
   `podman auto-update`.
+- **Incus OCI application containers** (Incus 6.3+, with skopeo and umoci on
+  the host) are devices of their own. The agent asks the registry for the
+  current image and computes its Incus fingerprint (the SHA-256 of the layer
+  digests), so an update is found without pulling it. Upgrading rebuilds the
+  instance from the newer image, like `incus rebuild`: configuration, devices
+  and volumes stay, the root file system is replaced. Incus cannot rebuild an
+  instance that has snapshots, so the agent takes none (there is no restore
+  button) and reports instances with snapshots instead of updating them. Nothing runs
+  inside these containers (many have no shell), so they get no package,
+  system or command sensors.
+- Containers created by **incus-compose** are updated through incus-compose
+  (`incus-compose up --detach --pull always --no-deps <service>` in the
+  project directory), because it recreates instances whose image differs
+  from the one it pulled. It does not record where a project lives, so the
+  agent looks for compose files in `incus.compose_dirs` (default `/root`, and
+  its subdirectories) and matches them by project name. incus-compose
+  recreates instances, so no snapshot is taken and there is no restore button.
+  incus-compose itself needs Incus listening on the network
+  (`core.https_address`) for its image cache, and an Incus OCI remote named
+  after each registry it pulls from (for example `docker.io`).
 - New images are detected by comparing local image digests with the registry
   (HEAD requests, which do not count against Docker Hub limits). Containers
   pinned by digest are left alone; standalone containers are reported but not

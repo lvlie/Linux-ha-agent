@@ -101,6 +101,11 @@ type Device struct {
 	Commands []Command
 	// AnyCommand adds the "Run command" text entity and its output sensor.
 	AnyCommand bool
+	// App is an OCI application container: it has an image instead of
+	// packages, and no shell to collect system information with.
+	App bool
+	// AppInstall is set when the agent can update the app's image.
+	AppInstall bool
 }
 
 // Command is a command whose output is a sensor or binary sensor.
@@ -196,70 +201,102 @@ func Payload(t Topics, o Origin, d Device, f Features, previous map[string]strin
 		return ""
 	}
 
-	// Updates.
-	updateEntity("system_update", "System updates", "{{ value_json.system_update | tojson }}", installIf(f.Upgrade, CmdUpgradePackages))
-	measurement("updates", "Pending updates", "updates", "updates", "mdi:package-up", component{
-		"json_attributes_topic":    state,
-		"json_attributes_template": "{{ {'packages': value_json.update_list, 'package_manager': value_json.package_manager} | tojson }}",
-	})
-	measurement("security_updates", "Security updates", "security_updates", "updates", "mdi:shield-alert", nil)
-	add("updates_available", "binary_sensor", "Updates available", component{
-		"value_template": "{{ 'ON' if value_json.updates_available else 'OFF' }}",
-		"device_class":   "update",
-	})
-	add("reboot_required", "binary_sensor", "Reboot required", component{
-		"value_template": "{{ 'ON' if value_json.reboot_required else 'OFF' }}",
-		"icon":           "mdi:restart-alert",
-	})
-	add("upgrade_running", "binary_sensor", "Upgrade running", component{
-		"value_template": "{{ 'ON' if value_json.in_progress else 'OFF' }}",
-		"device_class":   "running",
-	})
-	add("last_upgrade", "sensor", "Last upgrade", component{
-		"value_template": "{{ value_json.last_run_time }}",
-		"device_class":   "timestamp",
-	})
-	add("last_result", "sensor", "Last upgrade result", component{
-		"value_template":           "{{ value_json.last_run_result }}",
-		"icon":                     "mdi:clipboard-check-outline",
-		"json_attributes_topic":    state,
-		"json_attributes_template": "{{ (value_json.last_run or {}) | tojson }}",
-	})
-
-	// System.
-	add("kernel", "sensor", "Kernel", component{
-		"value_template":           "{{ value_json.kernel }}",
-		"icon":                     "mdi:penguin",
-		"json_attributes_topic":    state,
-		"json_attributes_template": "{{ {'latest_installed': value_json.latest_kernel, 'arch': value_json.arch} | tojson }}",
-	})
-	if !d.SharedKernel {
-		add("kernel_update", "binary_sensor", "Kernel update pending", component{
-			"value_template": "{{ 'ON' if value_json.kernel_update else 'OFF' }}",
+	if d.App {
+		c := component{
+			"value_template":           "{{ value_json.app_update | tojson }}",
+			"json_attributes_topic":    state,
+			"json_attributes_template": "{{ (value_json.app or {}) | tojson }}",
+			"icon":                     "mdi:docker",
+		}
+		if f.Upgrade && d.AppInstall {
+			c["command_topic"] = cmd
+			c["payload_install"] = CmdUpgrade
+		}
+		add("app_update", "update", "Image", c)
+		add("updates_available", "binary_sensor", "Updates available", component{
+			"value_template": "{{ 'ON' if value_json.updates_available else 'OFF' }}",
 			"device_class":   "update",
 		})
-	}
-	add("boot_time", "sensor", "Last boot", component{
-		"value_template": "{{ value_json.boot_time }}",
-		"device_class":   "timestamp",
-	})
-	measurement("cpu", "CPU usage", "cpu_percent", "%", "mdi:cpu-64-bit", component{"suggested_display_precision": 1})
-	measurement("memory", "Memory usage", "memory_percent", "%", "mdi:memory", component{
-		"suggested_display_precision": 1,
-		"json_attributes_topic":       state,
-		"json_attributes_template":    "{{ {'total_bytes': value_json.memory_total, 'available_bytes': value_json.memory_available} | tojson }}",
-	})
-	measurement("disk", "Disk usage", "disk_percent", "%", "mdi:harddisk", component{
-		"suggested_display_precision": 1,
-		"json_attributes_topic":       state,
-		"json_attributes_template":    "{{ {'total_bytes': value_json.disk_total, 'used_bytes': value_json.disk_used} | tojson }}",
-	})
-	measurement("load_1", "Load (1 min)", "load_1", "", "mdi:gauge", nil)
-	measurement("load_5", "Load (5 min)", "load_5", "", "mdi:gauge", nil)
-	measurement("load_15", "Load (15 min)", "load_15", "", "mdi:gauge", nil)
-	if d.Temperature {
-		measurement("temperature", "Temperature", "temperature", "°C", "", component{"device_class": "temperature"})
-		delete(cmps["temperature"], "icon")
+		add("upgrade_running", "binary_sensor", "Upgrade running", component{
+			"value_template": "{{ 'ON' if value_json.in_progress else 'OFF' }}",
+			"device_class":   "running",
+		})
+		add("last_upgrade", "sensor", "Last upgrade", component{
+			"value_template": "{{ value_json.last_run_time }}",
+			"device_class":   "timestamp",
+		})
+		add("last_result", "sensor", "Last upgrade result", component{
+			"value_template":           "{{ value_json.last_run_result }}",
+			"icon":                     "mdi:clipboard-check-outline",
+			"json_attributes_topic":    state,
+			"json_attributes_template": "{{ (value_json.last_run or {}) | tojson }}",
+		})
+	} else {
+		// Updates.
+		updateEntity("system_update", "System updates", "{{ value_json.system_update | tojson }}", installIf(f.Upgrade, CmdUpgradePackages))
+		measurement("updates", "Pending updates", "updates", "updates", "mdi:package-up", component{
+			"json_attributes_topic":    state,
+			"json_attributes_template": "{{ {'packages': value_json.update_list, 'package_manager': value_json.package_manager} | tojson }}",
+		})
+		measurement("security_updates", "Security updates", "security_updates", "updates", "mdi:shield-alert", nil)
+		add("updates_available", "binary_sensor", "Updates available", component{
+			"value_template": "{{ 'ON' if value_json.updates_available else 'OFF' }}",
+			"device_class":   "update",
+		})
+		add("reboot_required", "binary_sensor", "Reboot required", component{
+			"value_template": "{{ 'ON' if value_json.reboot_required else 'OFF' }}",
+			"icon":           "mdi:restart-alert",
+		})
+		add("upgrade_running", "binary_sensor", "Upgrade running", component{
+			"value_template": "{{ 'ON' if value_json.in_progress else 'OFF' }}",
+			"device_class":   "running",
+		})
+		add("last_upgrade", "sensor", "Last upgrade", component{
+			"value_template": "{{ value_json.last_run_time }}",
+			"device_class":   "timestamp",
+		})
+		add("last_result", "sensor", "Last upgrade result", component{
+			"value_template":           "{{ value_json.last_run_result }}",
+			"icon":                     "mdi:clipboard-check-outline",
+			"json_attributes_topic":    state,
+			"json_attributes_template": "{{ (value_json.last_run or {}) | tojson }}",
+		})
+
+		// System.
+		add("kernel", "sensor", "Kernel", component{
+			"value_template":           "{{ value_json.kernel }}",
+			"icon":                     "mdi:penguin",
+			"json_attributes_topic":    state,
+			"json_attributes_template": "{{ {'latest_installed': value_json.latest_kernel, 'arch': value_json.arch} | tojson }}",
+		})
+		if !d.SharedKernel {
+			add("kernel_update", "binary_sensor", "Kernel update pending", component{
+				"value_template": "{{ 'ON' if value_json.kernel_update else 'OFF' }}",
+				"device_class":   "update",
+			})
+		}
+		add("boot_time", "sensor", "Last boot", component{
+			"value_template": "{{ value_json.boot_time }}",
+			"device_class":   "timestamp",
+		})
+		measurement("cpu", "CPU usage", "cpu_percent", "%", "mdi:cpu-64-bit", component{"suggested_display_precision": 1})
+		measurement("memory", "Memory usage", "memory_percent", "%", "mdi:memory", component{
+			"suggested_display_precision": 1,
+			"json_attributes_topic":       state,
+			"json_attributes_template":    "{{ {'total_bytes': value_json.memory_total, 'available_bytes': value_json.memory_available} | tojson }}",
+		})
+		measurement("disk", "Disk usage", "disk_percent", "%", "mdi:harddisk", component{
+			"suggested_display_precision": 1,
+			"json_attributes_topic":       state,
+			"json_attributes_template":    "{{ {'total_bytes': value_json.disk_total, 'used_bytes': value_json.disk_used} | tojson }}",
+		})
+		measurement("load_1", "Load (1 min)", "load_1", "", "mdi:gauge", nil)
+		measurement("load_5", "Load (5 min)", "load_5", "", "mdi:gauge", nil)
+		measurement("load_15", "Load (15 min)", "load_15", "", "mdi:gauge", nil)
+		if d.Temperature {
+			measurement("temperature", "Temperature", "temperature", "°C", "", component{"device_class": "temperature"})
+			delete(cmps["temperature"], "icon")
+		}
 	}
 
 	// Diagnostics.
@@ -273,11 +310,13 @@ func Payload(t Topics, o Origin, d Device, f Features, previous map[string]strin
 		"entity_category": "diagnostic",
 		"icon":            "mdi:alert-circle-outline",
 	})
-	add("os", "sensor", "Operating system", component{
-		"value_template":  "{{ value_json.os }}",
-		"entity_category": "diagnostic",
-		"icon":            "mdi:linux",
-	})
+	if !d.App {
+		add("os", "sensor", "Operating system", component{
+			"value_template":  "{{ value_json.os }}",
+			"entity_category": "diagnostic",
+			"icon":            "mdi:linux",
+		})
+	}
 	button("check", "Check for updates", CmdCheck, component{"icon": "mdi:refresh", "entity_category": "diagnostic"})
 
 	// Containers.
@@ -348,7 +387,7 @@ func Payload(t Topics, o Origin, d Device, f Features, previous map[string]strin
 	}
 
 	// Actions.
-	if f.Upgrade {
+	if f.Upgrade && (!d.App || d.AppInstall) {
 		button("upgrade", "Upgrade", CmdUpgrade, component{"icon": "mdi:update"})
 	}
 	if f.Reboot {

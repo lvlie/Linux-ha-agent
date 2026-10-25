@@ -86,6 +86,10 @@ func (d *Device) model() string {
 // guestKind describes a guest the way its platform calls it.
 func guestKind(g guest.Guest) string {
 	switch {
+	case g.App != nil && g.App.ComposeProject != "":
+		return "incus-compose service"
+	case g.App != nil:
+		return "Incus OCI container"
 	case g.Platform == "proxmox" && g.Type == guest.VirtualMachine:
 		return "Proxmox VM"
 	case g.Platform == "proxmox":
@@ -115,6 +119,7 @@ func (d *Device) haDevice(hostID string, containerEntities bool) ha.Device {
 	if d.Guest != nil {
 		dev.Guest = true
 		dev.ViaDevice = hostID
+		dev.App = d.app() != nil
 	}
 	if containerEntities && d.Check != nil {
 		for _, c := range d.Check.Containers {
@@ -254,6 +259,20 @@ func (d *Device) state(extra map[string]any) map[string]any {
 	if d.Guest != nil {
 		st["platform"] = guestKind(*d.Guest)
 	}
+	if app := d.app(); app != nil {
+		st["app"] = map[string]any{"image": app.Image, "compose_project": app.ComposeProject, "compose_service": app.ComposeService}
+		current := shortDigest(app.Fingerprint)
+		u := updateInfo{Title: app.Image, InstalledVersion: strPtr(current), LatestVersion: strPtr(current), InProgress: d.Operation != ""}
+		if d.Check != nil && d.Check.App != nil {
+			st["app"].(map[string]any)["error"] = d.Check.App.Error
+			if d.Check.App.UpdateAvailable() {
+				u.LatestVersion = strPtr(shortDigest(d.Check.App.Latest))
+				st["image_update_list"] = []containers.ImageUpdate{{Image: app.Image, Digest: d.Check.App.Latest, Containers: []string{d.Name}, Managed: true}}
+			}
+			st["image_updates"] = d.pendingImages()
+		}
+		st["app_update"] = u
+	}
 	if s := d.Stats; s != nil {
 		st["kernel"] = s.Kernel
 		st["arch"] = s.Arch
@@ -359,6 +378,12 @@ func (d *Device) pendingUpdates() int {
 
 func (d *Device) pendingImages() int {
 	if d.Check == nil {
+		return 0
+	}
+	if d.Check.App != nil {
+		if d.Check.App.UpdateAvailable() {
+			return 1
+		}
 		return 0
 	}
 	return len(d.Check.Images.Updates)
