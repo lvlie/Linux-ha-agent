@@ -66,11 +66,12 @@ type Agent struct {
 	topics    ha.Topics
 	schedule  cron.Schedule
 
-	// marker is Options.OperationMarker. stopping is closed when shutdown
-	// starts, workerDone when the worker has finished its last operation.
+	// marker is Options.OperationMarker. stopping is the Done channel of
+	// the context Start was given: closed as soon as shutdown starts, with
+	// no goroutine in between. workerDone is closed when the worker has
+	// finished its last operation.
 	marker     string
-	stopping   chan struct{}
-	stopOnce   sync.Once
+	stopping   <-chan struct{}
 	workerDone chan struct{}
 
 	// composeProjects caches incuscompose.Find; see composeDir.
@@ -121,7 +122,6 @@ func New(opts Options) (*Agent, error) {
 		ops:       make(chan op, 256),
 	}
 	a.marker = opts.OperationMarker
-	a.stopping = make(chan struct{})
 	a.workerDone = make(chan struct{})
 	a.idle = sync.NewCond(&a.mu)
 	if a.log == nil {
@@ -238,10 +238,7 @@ func (a *Agent) Start(ctx context.Context) error {
 	}
 	a.publish(a.host, false)
 
-	go func() {
-		<-ctx.Done()
-		a.stopOnce.Do(func() { close(a.stopping) })
-	}()
+	a.stopping = ctx.Done()
 	go a.worker(ctx)
 	if len(a.providers) > 0 {
 		a.enqueue(op{kind: "sync"})
