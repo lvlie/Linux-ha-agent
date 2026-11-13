@@ -97,11 +97,11 @@ func (m *machine) docker(f *runner.Fake) {
 		}).
 		OnFunc("docker image inspect", func(c runner.Cmd) runner.Result {
 			defer m.lock()()
-			id, digest := "sha256:old", "sha256:digest-old"
+			id, digest, version := "sha256:old", "sha256:digest-old", "1.27.1"
 			if m.imagesUpgraded {
-				id, digest = "sha256:new", "sha256:digest-new"
+				id, digest, version = "sha256:new", "sha256:digest-new", "1.27.2"
 			}
-			return runner.Result{Stdout: fmt.Sprintf(`[{"Id":%q,"RepoDigests":["nginx@%s"]}]`, id, digest)}
+			return runner.Result{Stdout: fmt.Sprintf(`[{"Id":%q,"RepoDigests":["nginx@%s"],"Config":{"Labels":{"org.opencontainers.image.version":%q}}}]`, id, digest, version)}
 		}).
 		On("pull --quiet", runner.Result{}).
 		OnFunc("compose -p app -f /root/app/compose.yaml up -d", func(runner.Cmd) runner.Result {
@@ -150,6 +150,11 @@ func stats(f *runner.Fake, kernel, latest string) *runner.Fake {
 }
 
 type registry map[string]string
+
+// Version answers "v:<ref>" entries; images without one have no label.
+func (r registry) Version(_ context.Context, ref, _ string) (string, error) {
+	return r["v:"+ref], nil
+}
 
 func (r registry) Digest(_ context.Context, ref string) (string, error) {
 	if d, ok := r[ref]; ok {
@@ -215,7 +220,7 @@ func newEnvWith(t *testing.T, mutate func(*config.Config), before func(*env)) *e
 		MQTT:       e.mqtt,
 		Providers:  []guest.Provider{e.incus},
 		Local:      e.host,
-		Registry:   registry{"nginx:1.27": "sha256:digest-new"},
+		Registry:   registry{"nginx:1.27": "sha256:digest-new", "v:nginx:1.27": "1.27.2"},
 		Hostname:   "Lab1",
 		Version:    "1.2.3",
 		Now:        func() time.Time { return time.Date(2026, 10, 20, 3, 0, 0, 0, time.UTC) },

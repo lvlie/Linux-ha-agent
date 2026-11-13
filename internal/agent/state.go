@@ -69,7 +69,9 @@ type Check struct {
 	Images        containers.ImageCheck
 	ImagesChecked bool
 	// LocalDigests maps image IDs to their registry digests.
-	LocalDigests   map[string][]string
+	LocalDigests map[string][]string
+	// LocalVersions maps image IDs to the versions in their labels.
+	LocalVersions  map[string]string
 	RebootRequired bool
 	// App is the image check of an OCI application container.
 	App *AppCheck

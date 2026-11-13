@@ -69,13 +69,23 @@ func TestProjects(t *testing.T) {
 }
 
 func TestParseImageInspect(t *testing.T) {
-	got, err := ParseImageInspect(`[{"Id":"sha256:img1","RepoDigests":["nginx@sha256:old","docker.io/library/nginx@sha256:old2"]},{"Id":"img9","RepoDigests":[]}]`)
-	if err != nil || len(got["img1"]) != 2 || got["img1"][0] != "sha256:old" || len(got["img9"]) != 0 {
+	got, err := ParseImageInspect(`[{"Id":"sha256:img1","RepoDigests":["nginx@sha256:old","docker.io/library/nginx@sha256:old2"],"Config":{"Labels":{"org.opencontainers.image.version":"1.27.3"}}},{"Id":"img9","RepoDigests":[],"Config":{"Labels":null}}]`)
+	if err != nil || len(got.Digests["img1"]) != 2 || got.Digests["img1"][0] != "sha256:old" || len(got.Digests["img9"]) != 0 {
 		t.Fatalf("unexpected %v %v", got, err)
+	}
+	if got.Versions["img1"] != "1.27.3" || got.Versions["img9"] != "" {
+		t.Errorf("versions: %v", got.Versions)
 	}
 }
 
 type fakeResolver map[string]string
+
+// versionResolver answers "v:<ref>" as the version of every image.
+type versionResolver struct{ fakeResolver }
+
+func (versionResolver) Version(_ context.Context, ref, _ string) (string, error) {
+	return "v:" + ref, nil
+}
 
 func (f fakeResolver) Digest(_ context.Context, ref string) (string, error) {
 	if d, ok := f[ref]; ok {
@@ -101,6 +111,13 @@ func TestCheckImages(t *testing.T) {
 	}
 	if check.Updates[1].Image != "redis:7" || check.Updates[1].Managed {
 		t.Errorf("standalone redis must not be managed: %+v", check.Updates[1])
+	}
+	if check.Updates[0].Version != "" {
+		t.Errorf("version without a VersionResolver: %+v", check.Updates[0])
+	}
+	versioned := CheckImages(context.Background(), cs, local, versionResolver{fakeResolver{"nginx:1.27": "sha256:new", "postgres:17": "sha256:pg", "redis:7": "sha256:r2"}})
+	if versioned.Updates[0].Version != "v:nginx:1.27" {
+		t.Errorf("newer version not looked up: %+v", versioned.Updates[0])
 	}
 	unknown := CheckImages(context.Background(), cs[:1], map[string][]string{}, fakeResolver{})
 	if unknown.Unknown != 1 {

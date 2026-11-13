@@ -58,6 +58,8 @@ type App struct {
 	// Digest is the registry digest of the running image where the
 	// reference it was launched with is pinned to one (incus-compose).
 	Digest string
+	// Version is the version label of the running image, if known.
+	Version string
 }
 
 // AppProvider is implemented by platforms that run application containers.

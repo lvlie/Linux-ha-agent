@@ -5,7 +5,6 @@ package packages
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/lvlie/linux-ha-agent/internal/osinfo"
 	"github.com/lvlie/linux-ha-agent/internal/runner"
@@ -13,7 +12,9 @@ import (
 
 // Update is one pending package update.
 type Update struct {
-	Name     string `json:"name"`
+	Name string `json:"name"`
+	// From is the installed version, where the package manager says it.
+	From     string `json:"from,omitempty"`
 	Version  string `json:"version,omitempty"`
 	Source   string `json:"source,omitempty"`
 	Security bool   `json:"security,omitempty"`
@@ -82,18 +83,47 @@ func For(info osinfo.Info, r runner.Runner, opts Options) (Manager, error) {
 	}
 }
 
-// Summary renders a short human readable description of pending updates.
-func Summary(s Status, limit int) string {
+// Summary lists the updates as "name → version" within maxLen characters,
+// ending in "and N more" for those that do not fit.
+func Summary(s Status, maxLen int) string {
 	if len(s.Updates) == 0 {
 		return "Up to date"
 	}
-	names := make([]string, 0, limit)
-	for i, u := range s.Updates {
-		if i == limit {
-			names = append(names, fmt.Sprintf("and %d more", len(s.Updates)-limit))
-			break
+	more := func(n int) string {
+		if n == 0 {
+			return ""
 		}
-		names = append(names, u.Name)
+		return fmt.Sprintf(", and %d more", n)
 	}
-	return strings.Join(names, ", ")
+	var out string
+	for i, u := range s.Updates {
+		entry := u.Name
+		if u.Version != "" {
+			entry += " → " + u.Version
+		}
+		next := entry
+		if out != "" {
+			next = out + ", " + entry
+		}
+		if len(next)+len(more(len(s.Updates)-i-1)) > maxLen {
+			if out == "" {
+				return fmt.Sprintf("%d updates", len(s.Updates))
+			}
+			return out + more(len(s.Updates)-i)
+		}
+		out = next
+	}
+	return out
+}
+
+// String describes an update with the versions known:
+// "libc6 2.39-0ubuntu8.3 → 2.39-0ubuntu8.4".
+func (u Update) String() string {
+	switch {
+	case u.From != "" && u.Version != "":
+		return u.Name + " " + u.From + " → " + u.Version
+	case u.Version != "":
+		return u.Name + " → " + u.Version
+	}
+	return u.Name
 }

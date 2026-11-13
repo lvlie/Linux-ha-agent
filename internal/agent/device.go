@@ -183,10 +183,15 @@ func imageName(ref string) string {
 	return strings.TrimSuffix(ref, ":"+imageTag(ref)) + ":" + imageTag(ref)
 }
 
-// imageVersion is how an image version shows in Home Assistant: the image
-// with its tag and the short digest, "ghcr.io/linuxserver/sonarr:latest
-// (3d5ef2653c7b)".
-func imageVersion(ref, digest string) string {
+// imageVersion is how an image version shows in Home Assistant: the version
+// from the image's labels with the short digest, "4.0.20.3014-ls4
+// (3d5ef2653c7b)", or without a version the image with its tag,
+// "ghcr.io/linuxserver/sonarr:latest (3d5ef2653c7b)". The digest stays, as
+// an image can be rebuilt with the same version.
+func imageVersion(ref, version, digest string) string {
+	if version != "" {
+		return version + " (" + shortDigest(digest) + ")"
+	}
 	name := imageName(ref)
 	if name == "" {
 		return shortDigest(digest)
@@ -200,10 +205,10 @@ func (d *Device) containerStates() map[string]any {
 	if d.Check == nil {
 		return out
 	}
-	newer := map[string]string{} // container name -> newer digest
+	newer := map[string]containers.ImageUpdate{} // by container name
 	for _, u := range d.Check.Images.Updates {
 		for _, name := range u.Containers {
-			newer[name] = u.Digest
+			newer[name] = u
 		}
 	}
 	for _, c := range d.Check.Containers {
@@ -216,19 +221,21 @@ func (d *Device) containerStates() map[string]any {
 			id = c.ImageID
 		}
 		tag := imageTag(c.Image)
+		version := d.Check.LocalVersions[c.ImageID]
 		installed := "unknown"
 		if id != "" {
-			installed = imageVersion(c.Image, id)
+			installed = imageVersion(c.Image, version, id)
 		}
 		latest := installed
-		latestDigest := digest
-		if newDigest, ok := newer[c.Name]; ok {
-			latest, latestDigest = imageVersion(c.Image, newDigest), newDigest
+		latestDigest, latestVersion := digest, version
+		if u, ok := newer[c.Name]; ok {
+			latest, latestDigest, latestVersion = imageVersion(c.Image, u.Version, u.Digest), u.Digest, u.Version
 		}
 		out[ha.ContainerKey(c.Engine, c.Name)] = map[string]any{
 			"running": c.Running(),
 			"info": map[string]any{
 				"engine": c.Engine, "image": c.Image, "tag": tag, "digest": digest, "latest_digest": latestDigest,
+				"version": version, "latest_version": latestVersion,
 				"state": c.State, "project": c.Project, "service": c.Service, "update_available": latest != installed,
 			},
 			"update": updateInfo{
@@ -320,6 +327,7 @@ func (d *Device) state(extra map[string]any) map[string]any {
 		digest := d.digest(app.Fingerprint)
 		attrs := map[string]any{
 			"image": image, "tag": tag, "digest": digest, "latest_digest": digest,
+			"version": app.Version, "latest_version": app.Version,
 			"compose_project": app.ComposeProject, "compose_service": app.ComposeService,
 		}
 		if app.ByDigest {
@@ -330,13 +338,14 @@ func (d *Device) state(extra map[string]any) map[string]any {
 			attrs["fingerprint"] = app.Fingerprint
 		}
 		st["app"] = attrs
-		current := d.appVersion(image, app.Fingerprint)
+		current := d.appVersion(image, app.Version, app.Fingerprint)
 		u := updateInfo{Title: image, InstalledVersion: strPtr(current), LatestVersion: strPtr(current), InProgress: d.Operation != ""}
 		if d.Check != nil && d.Check.App != nil {
 			attrs["error"] = d.Check.App.Error
 			if d.appUpdate() {
 				attrs["latest_digest"] = d.digest(d.Check.App.Latest)
-				u.LatestVersion = strPtr(d.appVersion(image, d.Check.App.Latest))
+				attrs["latest_version"] = d.Check.App.LatestVersion
+				u.LatestVersion = strPtr(d.appVersion(image, d.Check.App.LatestVersion, d.Check.App.Latest))
 				st["image_update_list"] = []containers.ImageUpdate{{Image: image, Digest: d.Check.App.Latest, Containers: []string{d.Name}, Managed: true}}
 			}
 			st["image_updates"] = d.pendingImages()
@@ -378,7 +387,7 @@ func (d *Device) state(extra map[string]any) map[string]any {
 		if p := c.Packages; p != nil {
 			names := make([]string, 0, len(p.Updates))
 			for _, u := range p.Updates {
-				names = append(names, u.Name)
+				names = append(names, u.String())
 			}
 			if len(names) > 50 {
 				names = append(names[:50], fmt.Sprintf("... and %d more", len(names)-50))
@@ -393,7 +402,8 @@ func (d *Device) state(extra map[string]any) map[string]any {
 			system.LatestVersion = strPtr(c.OS)
 			if len(p.Updates) > 0 {
 				system.LatestVersion = strPtr(fmt.Sprintf("%s + %d updates", c.OS, len(p.Updates)))
-				system.ReleaseSummary = truncate(packages.Summary(*p, 15), 255)
+				// Home Assistant allows 255 characters.
+				system.ReleaseSummary = packages.Summary(*p, 255)
 			}
 		}
 		running := 0
@@ -423,7 +433,11 @@ func (d *Device) state(extra map[string]any) map[string]any {
 				images.LatestVersion = strPtr(fmt.Sprintf("%s, %d newer", current, n))
 				names := make([]string, 0, n)
 				for _, u := range c.Images.Updates {
-					names = append(names, u.Image)
+					if u.Version != "" {
+						names = append(names, u.Image+" → "+u.Version)
+					} else {
+						names = append(names, u.Image)
+					}
 				}
 				images.ReleaseSummary = truncate(strings.Join(names, ", "), 255)
 			}
@@ -442,11 +456,11 @@ func (d *Device) state(extra map[string]any) map[string]any {
 // appVersion is the version of an application container image with the
 // given fingerprint: the image with the registry digest, or with the
 // fingerprint while the digest is not known.
-func (d *Device) appVersion(ref, fingerprint string) string {
+func (d *Device) appVersion(ref, version, fingerprint string) string {
 	if digest := d.digest(fingerprint); digest != "" {
-		return imageVersion(ref, digest)
+		return imageVersion(ref, version, digest)
 	}
-	return imageVersion(ref, fingerprint)
+	return imageVersion(ref, version, fingerprint)
 }
 
 // digest is the registry digest of an application container image with the
