@@ -19,6 +19,9 @@ func TestApp(t *testing.T) {
 		"port":    {map[string]string{"image.id": "localhost:5000/nginx"}, "docker.io/library/nginx:latest"},
 		"flagged": {map[string]string{"volatile.container.oci": "true", "image.type": "", "image.id": "nginx:1"}, "docker.io/library/nginx:1"},
 	}
+	if app := App(map[string]string{"image.type": "oci", "image.description": "docker.io/library/nginx (OCI)", "image.id": "nginx:1.27", "image.oci.version": "1.27.3 "}); app.Version != "1.27.3" {
+		t.Errorf("version label: %q", app.Version)
+	}
 	for name, c := range cases {
 		cfg := map[string]string{"image.type": "oci", "image.description": "docker.io/library/nginx (OCI)",
 			"image.architecture": "amd64", "volatile.base_image": "fp"}

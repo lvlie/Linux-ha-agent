@@ -29,8 +29,11 @@ func TestParseAptSimulation(t *testing.T) {
 	if len(updates) != 4 {
 		t.Fatalf("expected 4 updates, got %+v", updates)
 	}
-	if updates[0].Name != "libc6" || updates[0].Version != "2.39-0ubuntu8.4" || !updates[0].Security {
+	if updates[0].Name != "libc6" || updates[0].From != "2.39-0ubuntu8.3" || updates[0].Version != "2.39-0ubuntu8.4" || !updates[0].Security {
 		t.Errorf("libc6 parsed wrong: %+v", updates[0])
+	}
+	if updates[3].Name != "linux-new" || updates[3].From != "" || updates[3].Version != "6.8.0-60.63" {
+		t.Errorf("new package parsed wrong: %+v", updates[3])
 	}
 	if updates[2].Security || updates[2].Source != "Ubuntu:24.04/noble-updates" {
 		t.Errorf("tzdata parsed wrong: %+v", updates[2])
@@ -122,6 +125,8 @@ func TestDnfCheck(t *testing.T) {
 		On("makecache", runner.Result{}).
 		On("repoquery", runner.Result{Stdout: "openssl-libs|1:3.2.4-1.fc43|updates\nvim-minimal|2:9.1-1.fc43|updates\n"}).
 		On("updateinfo", runner.Result{Stdout: "FEDORA-2025-1 Moderate/Sec. openssl-libs-1:3.2.4-1.fc43.x86_64\n"}).
+		// vim-minimal is not installed yet: rpm says so and exits 1.
+		On("rpm -q --queryformat %{NAME}|%{EVR}\\n openssl-libs vim-minimal", runner.Result{ExitCode: 1, Stdout: "openssl-libs|1:3.2.2-1.fc43\npackage vim-minimal is not installed\n"}).
 		On("needs-restarting", runner.Result{ExitCode: 1})
 	st, err := (&Dnf{r: f}).Check(context.Background())
 	if err != nil {
@@ -129,6 +134,9 @@ func TestDnfCheck(t *testing.T) {
 	}
 	if len(st.Updates) != 2 || st.Security != 1 || !st.Updates[0].Security || !st.RebootRequired {
 		t.Fatalf("unexpected %+v", st)
+	}
+	if st.Updates[0].From != "1:3.2.2-1.fc43" || st.Updates[1].From != "" {
+		t.Errorf("installed versions: %+v", st.Updates)
 	}
 }
 
@@ -224,12 +232,29 @@ func TestForUnsupported(t *testing.T) {
 }
 
 func TestSummary(t *testing.T) {
-	st := Status{Updates: []Update{{Name: "a"}, {Name: "b"}, {Name: "c"}}}
-	if got := Summary(st, 2); got != "a, b, and 1 more" {
-		t.Errorf("got %q", got)
+	st := Status{Updates: []Update{{Name: "a", From: "1", Version: "2"}, {Name: "b"}, {Name: "c", Version: "3"}}}
+	if got := Summary(st, 255); got != "a → 2, b, c → 3" {
+		t.Errorf("all fit: %q", got)
+	}
+	long := Status{Updates: append(st.Updates, Update{Name: "d", Version: "4"}, Update{Name: "e", Version: "5"})}
+	// The next entry and "and 2 more" would make 31 bytes.
+	if got := Summary(long, 30); got != "a → 2, b, and 3 more" {
+		t.Errorf("limited: %q", got)
+	}
+	if got := Summary(st, 5); got != "3 updates" {
+		t.Errorf("nothing fits: %q", got)
 	}
 	if got := Summary(Status{}, 2); got != "Up to date" {
 		t.Errorf("got %q", got)
+	}
+	for u, want := range map[Update]string{
+		{Name: "a", From: "1", Version: "2"}: "a 1 → 2",
+		{Name: "a", Version: "2"}:            "a → 2",
+		{Name: "a"}:                          "a",
+	} {
+		if got := u.String(); got != want {
+			t.Errorf("%+v: %q", u, got)
+		}
 	}
 }
 

@@ -77,9 +77,13 @@ func TestContainerEntities(t *testing.T) {
 	ctr := e.state(t, "lab1_web")["ctr"].(map[string]any)[webCtr].(map[string]any)
 	update := ctr["update"].(map[string]any)
 	info := ctr["info"].(map[string]any)
-	if ctr["running"] != true || update["installed_version"] != "nginx:1.27 (digest-old)" || update["latest_version"] != "nginx:1.27 (digest-new)" ||
-		info["tag"] != "1.27" || info["digest"] != "sha256:digest-old" || info["latest_digest"] != "sha256:digest-new" {
+	if ctr["running"] != true || update["installed_version"] != "1.27.1 (digest-old)" || update["latest_version"] != "1.27.2 (digest-new)" ||
+		info["tag"] != "1.27" || info["digest"] != "sha256:digest-old" || info["latest_digest"] != "sha256:digest-new" ||
+		info["version"] != "1.27.1" || info["latest_version"] != "1.27.2" {
 		t.Fatalf("container state: %v", ctr)
+	}
+	if cu := e.state(t, "lab1_web")["container_update"].(map[string]any); cu["release_summary"] != "nginx:1.27 → 1.27.2" {
+		t.Errorf("container update summary: %v", cu)
 	}
 
 	e.command("lab1_web", ha.CmdUpgradeContainer+" "+webCtr)
@@ -238,8 +242,11 @@ func TestImageVersion(t *testing.T) {
 		"docker.io/library/nginx@sha256:abc0123": "docker.io/library/nginx (3d5ef2653c7b)",
 		"sha256:0123456789abcdef":                "3d5ef2653c7b",
 	} {
-		if got := imageVersion(ref, "sha256:3d5ef2653c7b0000"); got != want {
+		if got := imageVersion(ref, "", "sha256:3d5ef2653c7b0000"); got != want {
 			t.Errorf("imageVersion(%q) = %q, want %q", ref, got, want)
 		}
+	}
+	if got := imageVersion("ghcr.io/linuxserver/sonarr:latest", "4.0.20.3014-ls4", "sha256:3d5ef2653c7b0000"); got != "4.0.20.3014-ls4 (3d5ef2653c7b)" {
+		t.Errorf("with a version: %q", got)
 	}
 }

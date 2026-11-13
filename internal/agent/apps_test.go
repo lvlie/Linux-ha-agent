@@ -508,3 +508,37 @@ func TestAppUpgradeRechecksMovedTag(t *testing.T) {
 		t.Fatalf("after upgrade: %v %v", st["updates_available"], u)
 	}
 }
+
+// Versions from the image labels show instead of the image reference, with
+// the digest, as an image can be rebuilt with the same version.
+func TestOCIAppVersions(t *testing.T) {
+	e := newEnvWith(t, nil, withApps(appGuest("nginx", guest.App{Image: "docker.io/library/nginx:1.27", Version: "1.27.1"})))
+	e.agent.registry = registry{"docker.io/library/nginx:1.27": "sha256:digest-new", "fp:docker.io/library/nginx:1.27": newFP, "v:docker.io/library/nginx:1.27": "1.27.2"}
+	e.command("lab1_nginx", ha.CmdCheck)
+	st := e.state(t, "lab1_nginx")
+	u := st["app_update"].(map[string]any)
+	if u["installed_version"] != "1.27.1 ("+oldFP[:12]+")" || u["latest_version"] != "1.27.2 (digest-new)" {
+		t.Fatalf("versions: %v", u)
+	}
+	if app := st["app"].(map[string]any); app["version"] != "1.27.1" || app["latest_version"] != "1.27.2" {
+		t.Errorf("app attributes: %v", app)
+	}
+
+	e.incus.OnRebuild = func(g guest.Guest) {
+		guests, _ := e.incus.Guests(context.Background())
+		for i := range guests {
+			if guests[i].Key() == g.Key() {
+				app := *guests[i].App
+				app.Fingerprint, app.Version = newFP, "1.27.2"
+				guests[i].App = &app
+			}
+		}
+		e.incus.SetGuests(guests...)
+	}
+	e.command("lab1_nginx", ha.CmdUpgrade)
+	st = e.state(t, "lab1_nginx")
+	u = st["app_update"].(map[string]any)
+	if st["updates_available"] != false || u["installed_version"] != "1.27.2 (digest-new)" || u["latest_version"] != u["installed_version"] {
+		t.Fatalf("after upgrade: %v", u)
+	}
+}

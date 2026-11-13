@@ -27,6 +27,7 @@ func (d *Dnf) Check(ctx context.Context) (Status, error) {
 		return Status{}, err
 	}
 	st := Status{Manager: d.Name(), Updates: ParseDnfRepoquery(res.Stdout), Security: -1}
+	d.installedVersions(ctx, st.Updates)
 
 	// Advisories are optional metadata; an error just means "unknown".
 	adv, err := d.r.Run(ctx, runner.Command("dnf", "-q", "updateinfo", "list", "--security"))
@@ -42,6 +43,41 @@ func (d *Dnf) Check(ctx context.Context) (Status, error) {
 	}
 	st.RebootRequired, err = d.RebootRequired(ctx)
 	return st, err
+}
+
+// installedVersions fills in the installed versions of updates. They are
+// only shown, so an error leaves them out.
+func (d *Dnf) installedVersions(ctx context.Context, updates []Update) {
+	if len(updates) == 0 {
+		return
+	}
+	args := []string{"rpm", "-q", "--queryformat", `%{NAME}|%{EVR}\n`}
+	for _, u := range updates {
+		args = append(args, u.Name)
+	}
+	// rpm exits 1 when one of the names is not installed (a new package
+	// that another one pulls in); the others are still printed.
+	res, err := d.r.Run(ctx, runner.Command(args...))
+	if err != nil {
+		return
+	}
+	installed := ParseRpmVersions(res.Stdout)
+	for i := range updates {
+		updates[i].From = installed[updates[i].Name]
+	}
+}
+
+// ParseRpmVersions parses "name|evr" lines. Of a package installed in
+// several versions (kernels), the last one printed is kept.
+func ParseRpmVersions(out string) map[string]string {
+	versions := map[string]string{}
+	for _, line := range strings.Split(out, "\n") {
+		name, evr, ok := strings.Cut(strings.TrimSpace(line), "|")
+		if ok && name != "" && evr != "" {
+			versions[name] = evr
+		}
+	}
+	return versions
 }
 
 // ParseDnfRepoquery parses "name|evr|repo" lines.

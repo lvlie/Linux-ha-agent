@@ -83,9 +83,11 @@ host. The full list is in [docs/entities.md](docs/entities.md).
 - **Containers** (Docker, Podman, on hosts and in guests): per container a
   running sensor, an update entity that pulls the newer image and recreates
   just that container, and a restart button; per machine the number of
-  running containers and of newer images. Image versions show the image as
-  written in the compose file with its tag and digest, e.g.
-  `ghcr.io/linuxserver/sonarr:latest (3d5ef2653c7b)`, also for the OCI
+  running containers and of newer images. Image versions show the version
+  the image declares in its `org.opencontainers.image.version` label with
+  the digest, e.g. `4.0.20.3014-ls4 (3d5ef2653c7b)`, or, for images without
+  that label, the image as written in the compose file with its tag,
+  `ghcr.io/linuxserver/sonarr:latest (3d5ef2653c7b)`; also for the OCI
   application containers below.
 - **Incus OCI application containers** (`incus launch docker:nginx`, and
   incus-compose): each one is a device with an image update entity that

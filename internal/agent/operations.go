@@ -79,6 +79,7 @@ func (a *Agent) check(ctx context.Context, d *Device) {
 		r.Reset()
 	}
 	local := map[string][]string{}
+	versions := map[string]string{}
 	engines, err := containers.Detect(ctx, d.Runner, a.podman(d))
 	if err != nil {
 		errs = append(errs, err.Error())
@@ -106,16 +107,20 @@ func (a *Agent) check(ctx context.Context, d *Device) {
 		for id := range ids {
 			list = append(list, id)
 		}
-		digests, err := e.RepoDigests(ctx, list)
+		images, err := e.Images(ctx, list)
 		if err != nil {
 			errs = append(errs, e.Name+" images: "+err.Error())
 			continue
 		}
-		for k, v := range digests {
+		for k, v := range images.Digests {
 			local[k] = v
+		}
+		for k, v := range images.Versions {
+			versions[k] = v
 		}
 	}
 	c.LocalDigests = local
+	c.LocalVersions = versions
 	if a.cfg.Checks.ContainerImages && a.registry != nil && len(c.Containers) > 0 {
 		c.Images = containers.CheckImages(ctx, c.Containers, local, a.registry)
 		c.ImagesChecked = true

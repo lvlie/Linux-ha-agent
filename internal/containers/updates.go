@@ -27,15 +27,21 @@ type FingerprintResolver interface {
 	Fingerprint(ctx context.Context, ref, arch string) (string, error)
 }
 
+// VersionResolver looks up the version label of the image a reference points
+// at for an architecture ("" for the agent's own); empty when it has none.
+type VersionResolver interface {
+	Version(ctx context.Context, ref, arch string) (string, error)
+}
+
 // Registry resolves digests with HEAD requests against the registry, which
 // do not count against Docker Hub pull limits. Results are cached until
 // Reset, so one check cycle asks the registry once per reference.
 type Registry struct {
 	mu    sync.Mutex
 	cache map[string]registryResult
-	// fingerprints by manifest digest and architecture; digests never
-	// change, so this survives Reset.
-	fingerprints map[string]string
+	// images by manifest digest and architecture; digests never change, so
+	// this survives Reset.
+	images map[string]imageInfo
 	// Options are extra options for every registry request (tests).
 	Options []remote.Option
 }
@@ -105,41 +111,75 @@ func (r *Registry) headDigest(ctx context.Context, ref string) (string, error) {
 // have in volatile.base_image. Only a HEAD request is made while the tag
 // still points at a manifest seen before.
 func (r *Registry) Fingerprint(ctx context.Context, ref, arch string) (string, error) {
+	info, err := r.image(ctx, ref, arch)
+	return info.fingerprint, err
+}
+
+// Version implements VersionResolver: the version label of the image ref
+// points at today, or empty when the image has none.
+func (r *Registry) Version(ctx context.Context, ref, arch string) (string, error) {
+	info, err := r.image(ctx, ref, arch)
+	return info.version, err
+}
+
+// imageInfo is what Registry keeps per manifest digest and architecture.
+type imageInfo struct {
+	fingerprint string
+	version     string
+}
+
+// image fetches the manifest and configuration of the image ref points at,
+// once per digest and architecture.
+func (r *Registry) image(ctx context.Context, ref, arch string) (imageInfo, error) {
 	digest, err := r.Digest(ctx, ref)
 	if err != nil {
-		return "", err
+		return imageInfo{}, err
 	}
 	key := digest + "|" + arch
 	r.mu.Lock()
-	fp, ok := r.fingerprints[key]
+	info, ok := r.images[key]
 	r.mu.Unlock()
 	if ok {
-		return fp, nil
+		return info, nil
 	}
 	parsed, err := name.ParseReference(ref)
 	if err != nil {
-		return "", err
+		return imageInfo{}, err
 	}
 	img, err := remote.Image(parsed, r.options(ctx, remote.WithPlatform(platform(arch)))...)
 	if err != nil {
-		return "", err
+		return imageInfo{}, err
 	}
 	manifest, err := img.Manifest()
 	if err != nil {
-		return "", err
+		return imageInfo{}, err
 	}
 	layers := make([]string, 0, len(manifest.Layers))
 	for _, l := range manifest.Layers {
 		layers = append(layers, l.Digest.String())
 	}
-	fp = IncusFingerprint(layers)
-	r.mu.Lock()
-	if r.fingerprints == nil {
-		r.fingerprints = map[string]string{}
+	info.fingerprint = IncusFingerprint(layers)
+	// The version is a nicety: an image without a readable configuration
+	// still has a fingerprint.
+	if cfg, err := img.ConfigFile(); err == nil {
+		info.version = ImageVersion(cfg.Config.Labels)
 	}
-	r.fingerprints[key] = fp
+	r.mu.Lock()
+	if r.images == nil {
+		r.images = map[string]imageInfo{}
+	}
+	r.images[key] = info
 	r.mu.Unlock()
-	return fp, nil
+	return info, nil
+}
+
+// VersionLabel is the OCI annotation for the version of the packaged
+// software, which most images set as a label.
+const VersionLabel = "org.opencontainers.image.version"
+
+// ImageVersion is the version an image declares in its labels, or empty.
+func ImageVersion(labels map[string]string) string {
+	return strings.TrimSpace(labels[VersionLabel])
 }
 
 // platform is the Linux platform of an architecture with an optional variant
@@ -166,7 +206,9 @@ func IncusFingerprint(layers []string) string {
 type ImageUpdate struct {
 	Image string `json:"image"`
 	// Digest is the newer digest in the registry.
-	Digest     string   `json:"digest"`
+	Digest string `json:"digest"`
+	// Version is the version label of the newer image, if it has one.
+	Version    string   `json:"version,omitempty"`
 	Containers []string `json:"containers"`
 	// Managed is true when the agent can update it (compose or podman
 	// auto-update); other containers must be recreated by hand.
@@ -213,6 +255,10 @@ func CheckImages(ctx context.Context, containers []Container, local map[string][
 			continue
 		}
 		update := ImageUpdate{Image: img, Digest: remoteDigest, Managed: true}
+		if v, ok := resolver.(VersionResolver); ok {
+			// Cached by digest: fetched once per new image.
+			update.Version, _ = v.Version(ctx, img, "")
+		}
 		for _, c := range users {
 			update.Containers = append(update.Containers, c.Name)
 			if c.Project == "" && !c.AutoUpdate {

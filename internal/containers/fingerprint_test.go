@@ -40,6 +40,9 @@ func TestRegistryFingerprint(t *testing.T) {
 		}
 		cfg, _ := img.ConfigFile()
 		cfg.Architecture, cfg.OS, cfg.Variant = arch, "linux", variant
+		if arch != "arm64" { // arm64 has no version label
+			cfg.Config.Labels = map[string]string{VersionLabel: "1.2.3-" + arch + variant}
+		}
 		img, err = mutate.ConfigFile(img, cfg)
 		if err != nil {
 			t.Fatal(err)
@@ -79,8 +82,16 @@ func TestRegistryFingerprint(t *testing.T) {
 			t.Errorf("%s: got %s, want %s", arch, got, want)
 		}
 	}
-	if fp, _ := r.Fingerprint(context.Background(), ref, "amd64"); len(r.fingerprints) != 4 || fp == "" {
-		t.Errorf("fingerprints not cached by manifest digest: %v", r.fingerprints)
+	if fp, _ := r.Fingerprint(context.Background(), ref, "amd64"); len(r.images) != 4 || fp == "" {
+		t.Errorf("fingerprints not cached by manifest digest: %v", r.images)
+	}
+	for arch, want := range map[string]string{"amd64": "1.2.3-amd64", "arm64": "", "arm/v7": "1.2.3-armv7"} {
+		if got, err := r.Version(context.Background(), ref, arch); err != nil || got != want {
+			t.Errorf("version %s: got %q (%v), want %q", arch, got, err, want)
+		}
+	}
+	if len(r.images) != 4 {
+		t.Errorf("versions fetched again: %v", r.images)
 	}
 	if _, err := r.Fingerprint(context.Background(), host+"/library/missing:1", "amd64"); err == nil {
 		t.Error("expected an error for a missing image")

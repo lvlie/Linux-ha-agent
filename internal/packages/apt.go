@@ -52,7 +52,7 @@ func (a *Apt) Check(ctx context.Context) (Status, error) {
 }
 
 // "Inst libc6 [2.39-0ubuntu8.3] (2.39-0ubuntu8.4 Ubuntu:24.04/noble-updates, Ubuntu:24.04/noble-security [amd64])"
-var aptInst = regexp.MustCompile(`^Inst (\S+)(?: \[[^\]]*\])? \((\S+) ([^\[)]*)`)
+var aptInst = regexp.MustCompile(`^Inst (\S+)(?: \[([^\]]*)\])? \((\S+) ([^\[)]*)`)
 
 // ParseAptSimulation parses the output of `apt-get -s dist-upgrade`.
 func ParseAptSimulation(out string) []Update {
@@ -62,10 +62,11 @@ func ParseAptSimulation(out string) []Update {
 		if m == nil {
 			continue
 		}
-		source := strings.TrimSpace(m[3])
+		source := strings.TrimSpace(m[4])
 		updates = append(updates, Update{
 			Name:     m[1],
-			Version:  m[2],
+			From:     m[2],
+			Version:  m[3],
 			Source:   source,
 			Security: strings.Contains(strings.ToLower(source), "security"),
 		})

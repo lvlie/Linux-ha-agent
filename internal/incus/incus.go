@@ -66,7 +66,9 @@ func App(config map[string]string) *guest.App {
 		return nil
 	}
 	app := &guest.App{
-		Fingerprint:    config["volatile.base_image"],
+		Fingerprint: config["volatile.base_image"],
+		// Incus copies the org.opencontainers.image.version label here.
+		Version:        strings.TrimSpace(config["image.oci.version"]),
 		Architecture:   ociArchitecture(config["image.architecture"]),
 		ComposeProject: config["user.label.incus-compose.project"],
 		ComposeService: config["user.label.incus-compose.service"],

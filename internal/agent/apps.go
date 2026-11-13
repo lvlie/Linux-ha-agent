@@ -26,6 +26,8 @@ type AppCheck struct {
 	Latest    string `json:"latest"`
 	// LatestDigest is the registry digest of Latest.
 	LatestDigest string `json:"latest_digest,omitempty"`
+	// LatestVersion is the version label of Latest, if it has one.
+	LatestVersion string `json:"latest_version,omitempty"`
 	// Error explains why the registry could not be asked.
 	Error string `json:"error,omitempty"`
 	// ComposeDir is the directory of the incus-compose project, if found.
@@ -118,6 +120,10 @@ func (a *Agent) appCheck(ctx context.Context, d *Device) {
 			// Cached by Fingerprint: no second request.
 			c.App.LatestDigest, _ = a.registry.Digest(ctx, image)
 		}
+	}
+	if v, ok := a.registry.(containers.VersionResolver); ok && c.App.Error == "" && c.App.Latest != "" {
+		// Cached with the fingerprint: no further request.
+		c.App.LatestVersion, _ = v.Version(ctx, image, app.Architecture)
 	}
 	if app.ComposeProject != "" {
 		c.App.ComposeDir, _ = a.composeDir(app.ComposeProject)

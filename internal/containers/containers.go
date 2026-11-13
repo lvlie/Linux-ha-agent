@@ -241,36 +241,52 @@ func Projects(containers []Container) []Project {
 	return projects
 }
 
-// RepoDigests returns the registry digests of each image ID.
-func (e *Engine) RepoDigests(ctx context.Context, imageIDs []string) (map[string][]string, error) {
+// LocalImages describes images in the engine's store by image ID.
+type LocalImages struct {
+	// Digests are the registry digests of each image.
+	Digests map[string][]string
+	// Versions are the versions the images declare in their labels.
+	Versions map[string]string
+}
+
+// Images inspects the images with the given IDs.
+func (e *Engine) Images(ctx context.Context, imageIDs []string) (LocalImages, error) {
 	if len(imageIDs) == 0 {
-		return map[string][]string{}, nil
+		return LocalImages{Digests: map[string][]string{}, Versions: map[string]string{}}, nil
 	}
 	res, err := runner.Check(ctx, e.r, e.cmd(append([]string{"image", "inspect"}, imageIDs...)...))
 	if err != nil {
-		return nil, err
+		return LocalImages{}, err
 	}
 	return ParseImageInspect(res.Stdout)
 }
 
-// ParseImageInspect maps image IDs to the digest part of their RepoDigests.
-func ParseImageInspect(out string) (map[string][]string, error) {
+// ParseImageInspect parses `docker/podman image inspect` output: the digest
+// part of each image's RepoDigests and its version label.
+func ParseImageInspect(out string) (LocalImages, error) {
 	var raw []struct {
 		ID          string   `json:"Id"`
 		RepoDigests []string `json:"RepoDigests"`
+		Config      struct {
+			Labels map[string]string `json:"Labels"`
+		} `json:"Config"`
 	}
 	if err := json.Unmarshal([]byte(out), &raw); err != nil {
-		return nil, fmt.Errorf("parsing image inspect output: %w", err)
+		return LocalImages{}, fmt.Errorf("parsing image inspect output: %w", err)
 	}
-	digests := map[string][]string{}
+	images := LocalImages{Digests: map[string][]string{}, Versions: map[string]string{}}
 	for _, img := range raw {
+		id := normalizeID(img.ID)
 		for _, rd := range img.RepoDigests {
 			if _, digest, ok := strings.Cut(rd, "@"); ok {
-				digests[normalizeID(img.ID)] = append(digests[normalizeID(img.ID)], digest)
+				images.Digests[id] = append(images.Digests[id], digest)
 			}
 		}
+		if v := ImageVersion(img.Config.Labels); v != "" {
+			images.Versions[id] = v
+		}
 	}
-	return digests, nil
+	return images, nil
 }
 
 // composeTool is the compose implementation of an engine.

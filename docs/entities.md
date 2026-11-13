@@ -7,8 +7,8 @@ is a device in Home Assistant. Guests are linked to their host.
 
 | Entity | Type | Notes |
 | --- | --- | --- |
-| System updates | update | Pending packages; *Install* upgrades them (permission `upgrade`) |
-| Pending updates | sensor | Count, package list as attribute |
+| System updates | update | Pending packages; the release notes list them with their new versions (`libc6 → 2.39-0ubuntu8.4`), as far as 255 characters allow. *Install* upgrades them (permission `upgrade`) |
+| Pending updates | sensor | Count; the packages as attribute with installed and new version where the package manager says them (`libc6 2.39-0ubuntu8.3 → 2.39-0ubuntu8.4`; apt both, dnf both, others only the new one) |
 | Security updates | sensor | apt and dnf; unknown on NixOS |
 | Updates available | binary sensor | Packages or container images |
 | Reboot required | binary sensor | `/var/run/reboot-required`, `dnf needs-restarting`, NixOS booted system, or a newer kernel installed |
@@ -32,11 +32,11 @@ is a device in Home Assistant. Guests are linked to their host.
 
 | Entity | Type | Notes |
 | --- | --- | --- |
-| Container images | update | Images with a newer version in their registry; *Install* updates all containers |
+| Container images | update | Images with a newer version in their registry, in the release notes with the new version where the image declares one (`nginx:1.27 → 1.27.2`); *Install* updates all containers |
 | Container image updates | sensor | Count, images as attributes |
 | Containers running | sensor | Total, engines and compose projects as attributes |
 | Container *name* | binary sensor | Running; image, tag, digest, engine, compose project and service as attributes |
-| Container *name* image | update | Installed and newest version as image, tag and short digest, `nginx:latest (3d5ef2653c7b)`; *Install* updates just this container (compose service or podman auto-update) |
+| Container *name* image | update | Installed and newest version as the image's version label and short digest, `1.27.2 (3d5ef2653c7b)`, or without that label as image, tag and short digest, `nginx:latest (3d5ef2653c7b)`; versions and digests also as attributes; *Install* updates just this container (compose service or podman auto-update) |
 | Restart container *name* | button | Permission `restart_containers` |
 
 Container entities can be turned off with `checks.container_entities: false`.
@@ -58,7 +58,7 @@ these entities instead of the package, system and command ones above:
 
 | Entity | Type | Notes |
 | --- | --- | --- |
-| Image | update | Running and newest version as image, tag and short registry digest, `docker.io/library/postgres:16-alpine (3d5ef2653c7b)`; image, tag, digests, Incus fingerprint, compose project and service as attributes (on Proxmox VE `digest_assumed` instead of the fingerprint). *Install* rebuilds the container from the newer image, or runs incus-compose for its service; none on Proxmox VE |
+| Image | update | Running and newest version as the image's version label and short registry digest, `6.4.4.10685-ls326 (3d5ef2653c7b)`, or without that label as image, tag and short digest, `docker.io/library/postgres:16-alpine (3d5ef2653c7b)`; image, tag, versions, digests, Incus fingerprint, compose project and service as attributes (on Proxmox VE `digest_assumed` instead of the fingerprint). *Install* rebuilds the container from the newer image, or runs incus-compose for its service; none on Proxmox VE |
 | Updates available | binary sensor | |
 | Upgrade running, Last upgrade, Last upgrade result | | As for machines |
 | Running, Platform | | Platform is *Incus OCI container*, *incus-compose service* or *Proxmox OCI container* |
