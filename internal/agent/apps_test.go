@@ -520,8 +520,16 @@ func TestOCIAppVersions(t *testing.T) {
 	if u["installed_version"] != "1.27.1 ("+oldFP[:12]+")" || u["latest_version"] != "1.27.2 (digest-new)" {
 		t.Fatalf("versions: %v", u)
 	}
-	if app := st["app"].(map[string]any); app["version"] != "1.27.1" || app["latest_version"] != "1.27.2" {
+	app := st["app"].(map[string]any)
+	if app["image_version"] != "1.27.1" || app["latest_image_version"] != "1.27.2" {
 		t.Errorf("app attributes: %v", app)
+	}
+	// The app attributes belong to the update entity, and Home Assistant
+	// lets them override the entity's own.
+	for _, key := range []string{"installed_version", "latest_version", "title", "release_summary", "release_url", "in_progress", "skipped_version", "auto_update"} {
+		if _, ok := app[key]; ok {
+			t.Errorf("app attribute %s overrides the update entity's own", key)
+		}
 	}
 
 	e.incus.OnRebuild = func(g guest.Guest) {
