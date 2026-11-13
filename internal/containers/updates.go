@@ -72,6 +72,16 @@ func (r *Registry) Reset() {
 	r.cache = nil
 }
 
+// Forget clears the cached digests of some references, so that the next
+// Digest asks the registry again.
+func (r *Registry) Forget(refs ...string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, ref := range refs {
+		delete(r.cache, ref)
+	}
+}
+
 func (r *Registry) options(ctx context.Context, extra ...remote.Option) []remote.Option {
 	opts := []remote.Option{remote.WithContext(ctx), remote.WithAuthFromKeychain(authn.DefaultKeychain)}
 	return append(append(opts, r.Options...), extra...)

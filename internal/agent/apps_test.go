@@ -432,3 +432,79 @@ func TestComposeDirIsCached(t *testing.T) {
 		t.Errorf("cache not refreshed: %q", dir)
 	}
 }
+
+// cachingRegistry caches answers until forgotten, like containers.Registry
+// between two check cycles.
+type cachingRegistry struct {
+	registry
+	cache map[string]string
+}
+
+func (r *cachingRegistry) get(key string) (string, error) {
+	if v, ok := r.cache[key]; ok {
+		return v, nil
+	}
+	v, ok := r.registry[key]
+	if !ok {
+		return "", errors.New("not found")
+	}
+	r.cache[key] = v
+	return v, nil
+}
+
+func (r *cachingRegistry) Digest(_ context.Context, ref string) (string, error) {
+	return r.get(ref)
+}
+
+func (r *cachingRegistry) Fingerprint(_ context.Context, ref, _ string) (string, error) {
+	return r.get("fp:" + ref)
+}
+
+// Forget also forgets the fingerprint: containers.Registry keys those by
+// digest, so a new digest gets a new fingerprint.
+func (r *cachingRegistry) Forget(refs ...string) {
+	for _, ref := range refs {
+		delete(r.cache, ref)
+		delete(r.cache, "fp:"+ref)
+	}
+}
+
+// The tag moved between the last check and the upgrade, so incus-compose
+// installed an image newer than the one the check found. The check after the
+// upgrade must not compare it with the cached, older digest and keep offering
+// an update that no upgrade can install.
+func TestAppUpgradeRechecksMovedTag(t *testing.T) {
+	const newerFP = "3333333333333333333333333333333333333333333333333333333333333333"
+	dir := filepath.Join(t.TempDir(), "web")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte("services: {app: {image: ghcr.io/me/app:latest}}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var e *env
+	e = newEnvWith(t, func(c *config.Config) {
+		c.Incus.ComposeDirs = []string{filepath.Dir(dir)}
+	}, func(env *env) {
+		withApps(appGuest("web-app-1", guest.App{Image: "ghcr.io/me/app@sha256:old", ComposeProject: "web", ComposeService: "app"}))(env)
+		env.host.On("sh incus-compose", runner.Result{}).
+			OnFunc("incus-compose up --detach --pull always --no-deps app", func(runner.Cmd) runner.Result {
+				replaceImage(e, "default/web-app-1", newerFP)
+				return runner.Result{}
+			})
+	})
+	reg := &cachingRegistry{registry: registry{"ghcr.io/me/app:latest": "sha256:new", "fp:ghcr.io/me/app:latest": newFP}, cache: map[string]string{}}
+	e.agent.registry = reg
+	e.command("lab1_web_app_1", ha.CmdCheck)
+	if e.state(t, "lab1_web_app_1")["updates_available"] != true {
+		t.Fatal("update not found")
+	}
+
+	reg.registry["ghcr.io/me/app:latest"], reg.registry["fp:ghcr.io/me/app:latest"] = "sha256:newer", newerFP
+	e.command("lab1_web_app_1", ha.CmdUpgrade)
+	st := e.state(t, "lab1_web_app_1")
+	u := st["app_update"].(map[string]any)
+	if st["updates_available"] != false || u["installed_version"] != "ghcr.io/me/app:latest (newer)" || u["latest_version"] != u["installed_version"] {
+		t.Fatalf("after upgrade: %v %v", st["updates_available"], u)
+	}
+}
