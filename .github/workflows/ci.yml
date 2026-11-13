@@ -323,10 +323,14 @@ jobs:
           # For pull requests GITHUB_SHA is a merge commit that only exists on GitHub.
           COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
           # A pull request from a fork has its head commit only in the fork, and
-          # with GOPROXY=direct Go only looks at this repository's branches and
+          # without the proxy Go only looks at this repository's branches and
           # tags. Empty for pushes and pull requests from branches here.
           HEAD_REPO_URL: ${{ github.event.pull_request.head.repo.full_name != github.repository && github.event.pull_request.head.repo.clone_url || '' }}
-          GOPROXY: direct
+          # Only this module is fetched directly, as the proxy may not have the
+          # pushed commit yet. Dependencies come from the proxy like for users:
+          # fetched directly, a tag that was moved upstream after the release
+          # no longer matches the checksum database (lxc/incus v7.6.0).
+          GONOPROXY: github.com/lvlie/linux-ha-agent
           # Newer git runs auto-maintenance detached after a fetch; it then
           # races with Go's next fetch in the same repository ("shallow file
           # has changed since we read it").
