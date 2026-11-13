@@ -179,7 +179,10 @@ Containers, on hosts and inside guests:
   passes its own `INCUS_*` environment variables on to incus-compose, so its
   settings can be set on the service, for example `INCUS_COMPOSE_NO_HEALTHD=true`
   in a systemd drop-in when a project has a `restart:` policy but Incus has no
-  https listener for the healthd sidecar.
+  https listener for the healthd sidecar. Since incus-compose 1.4 an ic-dns
+  sidecar is created for every project, which also needs https; without it
+  every upgrade fails, so set both `INCUS_COMPOSE_NO_HEALTHD=true` and
+  `INCUS_COMPOSE_NO_DNS=true`.
 - New images are detected by comparing local image digests with the registry
   (HEAD requests, which do not count against Docker Hub limits). Containers
   pinned by digest are left alone; standalone containers are reported but not
