@@ -36,7 +36,7 @@ is a device in Home Assistant. Guests are linked to their host.
 | Container image updates | sensor | Count, images as attributes |
 | Containers running | sensor | Total, engines and compose projects as attributes |
 | Container *name* | binary sensor | Running; image, tag, digest, engine, compose project and service as attributes |
-| Container *name* image | update | Installed and newest version as the image's version label and short digest, `1.27.2 (3d5ef2653c7b)`, or without that label as image, tag and short digest, `nginx:latest (3d5ef2653c7b)`; versions and digests also as attributes; *Install* updates just this container (compose service or podman auto-update) |
+| Container *name* image | update | Installed and newest version as the image's version label and short digest, `1.27.2 (3d5ef2653c7b)`, or without that label as image, tag and short digest, `nginx:latest (3d5ef2653c7b)`; versions (`image_version`, `latest_image_version`) and digests also as attributes; *Install* updates just this container (compose service or podman auto-update) |
 | Restart container *name* | button | Permission `restart_containers` |
 
 Container entities can be turned off with `checks.container_entities: false`.

@@ -235,7 +235,7 @@ func (d *Device) containerStates() map[string]any {
 			"running": c.Running(),
 			"info": map[string]any{
 				"engine": c.Engine, "image": c.Image, "tag": tag, "digest": digest, "latest_digest": latestDigest,
-				"version": version, "latest_version": latestVersion,
+				"image_version": version, "latest_image_version": latestVersion,
 				"state": c.State, "project": c.Project, "service": c.Service, "update_available": latest != installed,
 			},
 			"update": updateInfo{
@@ -327,7 +327,9 @@ func (d *Device) state(extra map[string]any) map[string]any {
 		digest := d.digest(app.Fingerprint)
 		attrs := map[string]any{
 			"image": image, "tag": tag, "digest": digest, "latest_digest": digest,
-			"version": app.Version, "latest_version": app.Version,
+			// Not "latest_version": these are the update entity's attributes,
+			// and Home Assistant lets them override its own.
+			"image_version": app.Version, "latest_image_version": app.Version,
 			"compose_project": app.ComposeProject, "compose_service": app.ComposeService,
 		}
 		if app.ByDigest {
@@ -344,7 +346,7 @@ func (d *Device) state(extra map[string]any) map[string]any {
 			attrs["error"] = d.Check.App.Error
 			if d.appUpdate() {
 				attrs["latest_digest"] = d.digest(d.Check.App.Latest)
-				attrs["latest_version"] = d.Check.App.LatestVersion
+				attrs["latest_image_version"] = d.Check.App.LatestVersion
 				u.LatestVersion = strPtr(d.appVersion(image, d.Check.App.LatestVersion, d.Check.App.Latest))
 				st["image_update_list"] = []containers.ImageUpdate{{Image: image, Digest: d.Check.App.Latest, Containers: []string{d.Name}, Managed: true}}
 			}

@@ -79,7 +79,7 @@ func TestContainerEntities(t *testing.T) {
 	info := ctr["info"].(map[string]any)
 	if ctr["running"] != true || update["installed_version"] != "1.27.1 (digest-old)" || update["latest_version"] != "1.27.2 (digest-new)" ||
 		info["tag"] != "1.27" || info["digest"] != "sha256:digest-old" || info["latest_digest"] != "sha256:digest-new" ||
-		info["version"] != "1.27.1" || info["latest_version"] != "1.27.2" {
+		info["image_version"] != "1.27.1" || info["latest_image_version"] != "1.27.2" {
 		t.Fatalf("container state: %v", ctr)
 	}
 	if cu := e.state(t, "lab1_web")["container_update"].(map[string]any); cu["release_summary"] != "nginx:1.27 → 1.27.2" {
