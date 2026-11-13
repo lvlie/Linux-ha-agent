@@ -2,7 +2,7 @@ module github.com/lvlie/linux-ha-agent
 
 go 1.26.9
 
-toolchain go1.26.10
+toolchain go1.26.11
 
 require (
 	github.com/eclipse/paho.mqtt.golang v1.5.1

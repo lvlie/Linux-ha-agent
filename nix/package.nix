@@ -19,7 +19,7 @@ buildGoModule {
   };
 
   # Update after changing go.mod: set to lib.fakeHash, build, copy the "got" hash.
-  vendorHash = "sha256-l+pg2yKKOG+jdPHFMEmzful16NVxci54HF5UjjR5yMA=";
+  vendorHash = "sha256-2pvYnTBv5uz5PVPCIdB2iMpbw3xcVGlRwZLYe/rKXE4=";
 
   subPackages = [ "cmd/linux-ha-agent" ];
   env.CGO_ENABLED = 0;
