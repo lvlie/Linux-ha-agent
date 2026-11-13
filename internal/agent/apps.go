@@ -249,6 +249,11 @@ func (a *Agent) upgradeApp(ctx context.Context, d *Device, report *RunReport, al
 		report.step("image", false, errors.New(noImage(*app)), "")
 		return
 	}
+	// The check after the upgrade must ask the registry again: the cached
+	// digest is from the last check cycle, and the tag may have moved since,
+	// so the upgrade may have installed a newer image than that digest.
+	// Compared with the stale one, the update would still look available.
+	defer a.forgetImages(app.Image, a.trackedImage(*app))
 
 	if app.ComposeProject != "" {
 		if !g.Running() {
@@ -297,6 +302,13 @@ func (a *Agent) upgradeApp(ctx context.Context, d *Device, report *RunReport, al
 	err = rebuilder.RebuildApp(ctx, g, a.cfg.Guests.StopTimeout)
 	changed := a.refreshGuest(ctx, d, app.Fingerprint)
 	report.step("rebuild from "+app.Image, changed, err, imageDetail(changed, app.Image))
+}
+
+// forgetImages drops the registry's cached digests of image references.
+func (a *Agent) forgetImages(refs ...string) {
+	if r, ok := a.registry.(interface{ Forget(...string) }); ok {
+		r.Forget(refs...)
+	}
 }
 
 // latestFingerprint asks the registry for the fingerprint of the newest
