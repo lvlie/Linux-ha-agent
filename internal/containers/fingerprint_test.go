@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http/httptest"
+	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -18,12 +20,18 @@ import (
 )
 
 func TestIncusFingerprint(t *testing.T) {
-	// As Incus computes it: the SHA-256 of the layer digests, concatenated.
-	sum := sha256.Sum256([]byte("sha256:aaasha256:bbb"))
-	if got := IncusFingerprint([]string{"sha256:aaa", "sha256:bbb"}); got != hex.EncodeToString(sum[:]) {
+	// As Incus 7.7 computes it: the SHA-256 of the manifest digest and the
+	// layer digests, concatenated.
+	sum := sha256.Sum256([]byte("sha256:mmmsha256:aaasha256:bbb"))
+	if got := IncusFingerprint("sha256:mmm", []string{"sha256:aaa", "sha256:bbb"}); got != hex.EncodeToString(sum[:]) {
 		t.Fatalf("got %q", got)
 	}
-	if IncusFingerprint([]string{"a", "b"}) != IncusFingerprint([]string{"ab"}) {
+	// As Incus before 7.7 computes it: the layer digests alone.
+	sum = sha256.Sum256([]byte("sha256:aaasha256:bbb"))
+	if got := LegacyIncusFingerprint([]string{"sha256:aaa", "sha256:bbb"}); got != hex.EncodeToString(sum[:]) {
+		t.Fatalf("legacy: got %q", got)
+	}
+	if LegacyIncusFingerprint([]string{"a", "b"}) != LegacyIncusFingerprint([]string{"ab"}) {
 		t.Error("layers are concatenated")
 	}
 }
@@ -65,6 +73,10 @@ func TestRegistryFingerprint(t *testing.T) {
 	if err := remote.WriteIndex(parsed, idx); err != nil {
 		t.Fatal(err)
 	}
+	indexDigest, err := idx.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	r := &Registry{}
 	for arch, img := range map[string]v1.Image{"amd64": amd, "arm64": arm, "arm/v6": armv6, "arm/v7": armv7} {
@@ -78,8 +90,17 @@ func TestRegistryFingerprint(t *testing.T) {
 			d, _ := l.Digest()
 			digests = append(digests, d.String())
 		}
-		if want := IncusFingerprint(digests); got != want {
+		// Launched from the tag: the index digest.
+		want := IncusFingerprint(indexDigest.String(), digests)
+		if got != want {
 			t.Errorf("%s: got %s, want %s", arch, got, want)
+		}
+		// Launched from the architecture's manifest digest (incus-compose).
+		manifest, _ := img.Digest()
+		byManifest := IncusFingerprint(manifest.String(), digests)
+		all, err := r.Fingerprints(context.Background(), ref, arch)
+		if legacy := LegacyIncusFingerprint(digests); err != nil || len(all) != 3 || all[0] != want || all[1] != byManifest || all[2] != legacy {
+			t.Errorf("%s: fingerprints %v (%v), want [%s %s %s]", arch, all, err, want, byManifest, legacy)
 		}
 	}
 	if fp, _ := r.Fingerprint(context.Background(), ref, "amd64"); len(r.images) != 4 || fp == "" {
@@ -95,5 +116,35 @@ func TestRegistryFingerprint(t *testing.T) {
 	}
 	if _, err := r.Fingerprint(context.Background(), host+"/library/missing:1", "amd64"); err == nil {
 		t.Error("expected an error for a missing image")
+	}
+}
+
+// A single-architecture image has one manifest: the tag's digest is its
+// digest, so there is one Incus 7.7 fingerprint.
+func TestRegistryFingerprintsSingleManifest(t *testing.T) {
+	srv := httptest.NewServer(registry.New())
+	defer srv.Close()
+	ref := strings.TrimPrefix(srv.URL, "http://") + "/library/single:1"
+	img, err := random.Image(64, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := name.ParseReference(ref, name.Insecure)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := remote.Write(parsed, img); err != nil {
+		t.Fatal(err)
+	}
+	layers, _ := img.Layers()
+	var digests []string
+	for _, l := range layers {
+		d, _ := l.Digest()
+		digests = append(digests, d.String())
+	}
+	manifest, _ := img.Digest()
+	fps, err := (&Registry{}).Fingerprints(context.Background(), ref, runtime.GOARCH)
+	if want := []string{IncusFingerprint(manifest.String(), digests), LegacyIncusFingerprint(digests)}; err != nil || !slices.Equal(fps, want) {
+		t.Errorf("fingerprints %v (%v), want %v", fps, err, want)
 	}
 }

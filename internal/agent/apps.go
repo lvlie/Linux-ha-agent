@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"time"
 
 	"github.com/lvlie/linux-ha-agent/internal/containers"
@@ -98,7 +99,7 @@ func (a *Agent) appCheck(ctx context.Context, d *Device) {
 		image = a.trackedImage(app)
 	}
 	c := &Check{Time: a.now(), App: &AppCheck{Image: image, Installed: app.Fingerprint}}
-	resolver, ok := a.registry.(containers.FingerprintResolver)
+	_, ok := a.registry.(containers.FingerprintResolver)
 	switch {
 	case image == "":
 		c.App.Error = noImage(app)
@@ -111,7 +112,7 @@ func (a *Agent) appCheck(ctx context.Context, d *Device) {
 	case app.ByDigest || !a.cfg.Checks.ContainerImages || !ok:
 		c.App.Error = "image checks are off"
 	default:
-		latest, err := resolver.Fingerprint(ctx, image, app.Architecture)
+		latest, err := a.latestFingerprint(ctx, image, app.Architecture, app.Fingerprint)
 		if err != nil {
 			c.App.Error = err.Error()
 		}
@@ -284,7 +285,7 @@ func (a *Agent) upgradeApp(ctx context.Context, d *Device, report *RunReport, al
 		report.step("image", false, fmt.Errorf("%s cannot update application containers; recreate it from the newer image", g.Platform), "")
 		return
 	}
-	latest, err := a.latestFingerprint(ctx, app)
+	latest, err := a.latestFingerprint(ctx, app.Image, app.Architecture, app.Fingerprint)
 	switch {
 	case err == nil && latest == app.Fingerprint:
 		report.step("image", false, nil, "up to date")
@@ -318,13 +319,26 @@ func (a *Agent) forgetImages(refs ...string) {
 }
 
 // latestFingerprint asks the registry for the fingerprint of the newest
-// version of an app's image.
-func (a *Agent) latestFingerprint(ctx context.Context, app *guest.App) (string, error) {
+// version of an app's image. Incus 7.7 changed how it fingerprints OCI
+// images, and images pulled before keep the old fingerprint, so when the
+// newest image is the installed one in either way, the installed fingerprint
+// is returned; otherwise the current way.
+func (a *Agent) latestFingerprint(ctx context.Context, image, arch, installed string) (string, error) {
+	if resolver, ok := a.registry.(containers.FingerprintsResolver); ok {
+		fps, err := resolver.Fingerprints(ctx, image, arch)
+		if err != nil || len(fps) == 0 {
+			return "", err
+		}
+		if installed != "" && slices.Contains(fps, installed) {
+			return installed, nil
+		}
+		return fps[0], nil
+	}
 	resolver, ok := a.registry.(containers.FingerprintResolver)
 	if !ok {
 		return "", errors.New("no registry to ask")
 	}
-	return resolver.Fingerprint(ctx, app.Image, app.Architecture)
+	return resolver.Fingerprint(ctx, image, arch)
 }
 
 func imageDetail(changed bool, image string) string {

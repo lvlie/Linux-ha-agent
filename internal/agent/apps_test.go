@@ -550,3 +550,54 @@ func TestOCIAppVersions(t *testing.T) {
 		t.Fatalf("after upgrade: %v", u)
 	}
 }
+
+// fingerprintsRegistry answers Fingerprints with both the Incus 7.7 and the
+// earlier fingerprint of each image.
+type fingerprintsRegistry struct {
+	registry
+	fps map[string][]string
+}
+
+func (r fingerprintsRegistry) Fingerprints(_ context.Context, ref, _ string) ([]string, error) {
+	if fps, ok := r.fps[ref]; ok {
+		return fps, nil
+	}
+	return nil, errors.New("not found")
+}
+
+// Incus 7.7 fingerprints OCI images differently, and images pulled before
+// keep their fingerprint: either one of the newest image is up to date.
+func TestOCIAppFingerprintFormats(t *testing.T) {
+	const otherFP = "3333333333333333333333333333333333333333333333333333333333333333"
+	e := newEnvWith(t, nil, withApps(
+		appGuest("old", guest.App{Image: "docker.io/library/old:1"}),
+		appGuest("new", guest.App{Image: "docker.io/library/new:1", Fingerprint: newFP}),
+		appGuest("outdated", guest.App{Image: "docker.io/library/outdated:1"}),
+	))
+	e.agent.registry = fingerprintsRegistry{
+		registry: registry{
+			"docker.io/library/old:1":      "sha256:old",
+			"docker.io/library/new:1":      "sha256:new",
+			"docker.io/library/outdated:1": "sha256:outdated",
+		},
+		fps: map[string][]string{
+			// Pulled by Incus 7.6: its fingerprint is the legacy one.
+			"docker.io/library/old:1": {newFP, oldFP},
+			// Pulled by Incus 7.7.
+			"docker.io/library/new:1":      {newFP, otherFP},
+			"docker.io/library/outdated:1": {newFP, otherFP},
+		},
+	}
+	for _, name := range []string{"old", "new", "outdated"} {
+		e.command("lab1_"+name, ha.CmdCheck)
+	}
+	for name, want := range map[string]bool{"old": false, "new": false, "outdated": true} {
+		st := e.state(t, "lab1_"+name)
+		if st["updates_available"] != want {
+			t.Errorf("%s: updates_available %v, want %v: %v", name, st["updates_available"], want, st)
+		}
+	}
+	if app := e.state(t, "lab1_outdated")["app"].(map[string]any); app["latest_digest"] != "sha256:outdated" {
+		t.Errorf("outdated app attributes: %v", app)
+	}
+}
