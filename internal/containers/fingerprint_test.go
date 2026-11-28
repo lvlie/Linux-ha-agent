@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http/httptest"
+	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -71,6 +73,10 @@ func TestRegistryFingerprint(t *testing.T) {
 	if err := remote.WriteIndex(parsed, idx); err != nil {
 		t.Fatal(err)
 	}
+	indexDigest, err := idx.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	r := &Registry{}
 	for arch, img := range map[string]v1.Image{"amd64": amd, "arm64": arm, "arm/v6": armv6, "arm/v7": armv7} {
@@ -84,15 +90,17 @@ func TestRegistryFingerprint(t *testing.T) {
 			d, _ := l.Digest()
 			digests = append(digests, d.String())
 		}
-		// The architecture's manifest digest, not the index's.
-		manifest, _ := img.Digest()
-		want := IncusFingerprint(manifest.String(), digests)
+		// Launched from the tag: the index digest.
+		want := IncusFingerprint(indexDigest.String(), digests)
 		if got != want {
 			t.Errorf("%s: got %s, want %s", arch, got, want)
 		}
+		// Launched from the architecture's manifest digest (incus-compose).
+		manifest, _ := img.Digest()
+		byManifest := IncusFingerprint(manifest.String(), digests)
 		all, err := r.Fingerprints(context.Background(), ref, arch)
-		if legacy := LegacyIncusFingerprint(digests); err != nil || len(all) != 2 || all[0] != want || all[1] != legacy {
-			t.Errorf("%s: fingerprints %v (%v), want [%s %s]", arch, all, err, want, legacy)
+		if legacy := LegacyIncusFingerprint(digests); err != nil || len(all) != 3 || all[0] != want || all[1] != byManifest || all[2] != legacy {
+			t.Errorf("%s: fingerprints %v (%v), want [%s %s %s]", arch, all, err, want, byManifest, legacy)
 		}
 	}
 	if fp, _ := r.Fingerprint(context.Background(), ref, "amd64"); len(r.images) != 4 || fp == "" {
@@ -108,5 +116,35 @@ func TestRegistryFingerprint(t *testing.T) {
 	}
 	if _, err := r.Fingerprint(context.Background(), host+"/library/missing:1", "amd64"); err == nil {
 		t.Error("expected an error for a missing image")
+	}
+}
+
+// A single-architecture image has one manifest: the tag's digest is its
+// digest, so there is one Incus 7.7 fingerprint.
+func TestRegistryFingerprintsSingleManifest(t *testing.T) {
+	srv := httptest.NewServer(registry.New())
+	defer srv.Close()
+	ref := strings.TrimPrefix(srv.URL, "http://") + "/library/single:1"
+	img, err := random.Image(64, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := name.ParseReference(ref, name.Insecure)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := remote.Write(parsed, img); err != nil {
+		t.Fatal(err)
+	}
+	layers, _ := img.Layers()
+	var digests []string
+	for _, l := range layers {
+		d, _ := l.Digest()
+		digests = append(digests, d.String())
+	}
+	manifest, _ := img.Digest()
+	fps, err := (&Registry{}).Fingerprints(context.Background(), ref, runtime.GOARCH)
+	if want := []string{IncusFingerprint(manifest.String(), digests), LegacyIncusFingerprint(digests)}; err != nil || !slices.Equal(fps, want) {
+		t.Errorf("fingerprints %v (%v), want %v", fps, err, want)
 	}
 }

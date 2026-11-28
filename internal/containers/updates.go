@@ -114,21 +114,28 @@ func (r *Registry) headDigest(ctx context.Context, ref string) (string, error) {
 }
 
 // Fingerprint implements FingerprintResolver: what a container launched from
-// ref today by a current Incus would have in volatile.base_image. Only a HEAD
+// ref (the tag) today by a current Incus would have in volatile.base_image. Only a HEAD
 // request is made while the tag still points at a manifest seen before.
 func (r *Registry) Fingerprint(ctx context.Context, ref, arch string) (string, error) {
 	info, err := r.image(ctx, ref, arch)
 	return info.fingerprint, err
 }
 
-// Fingerprints implements FingerprintsResolver: the fingerprint of Incus 7.7
-// and later, then the one of earlier versions.
+// Fingerprints implements FingerprintsResolver. Incus 7.7 and later hash
+// the digest skopeo reports for the reference it launched from: the tag's
+// digest (an index for multi-architecture images) when launched from a tag,
+// the architecture's manifest digest when launched from that digest, as
+// incus-compose does. Then comes the fingerprint of earlier versions.
 func (r *Registry) Fingerprints(ctx context.Context, ref, arch string) ([]string, error) {
 	info, err := r.image(ctx, ref, arch)
 	if err != nil {
 		return nil, err
 	}
-	return []string{info.fingerprint, info.legacyFingerprint}, nil
+	fps := []string{info.fingerprint}
+	if info.manifestFingerprint != info.fingerprint {
+		fps = append(fps, info.manifestFingerprint)
+	}
+	return append(fps, info.legacyFingerprint), nil
 }
 
 // Version implements VersionResolver: the version label of the image ref
@@ -140,9 +147,14 @@ func (r *Registry) Version(ctx context.Context, ref, arch string) (string, error
 
 // imageInfo is what Registry keeps per manifest digest and architecture.
 type imageInfo struct {
-	fingerprint       string
-	legacyFingerprint string
-	version           string
+	// fingerprint is the one of a launch from the tag (Incus 7.7+),
+	// manifestFingerprint the one of a launch from the architecture's
+	// manifest digest (Incus 7.7+), legacyFingerprint the one of Incus
+	// before 7.7.
+	fingerprint         string
+	manifestFingerprint string
+	legacyFingerprint   string
+	version             string
 }
 
 // image fetches the manifest and configuration of the image ref points at,
@@ -180,7 +192,8 @@ func (r *Registry) image(ctx context.Context, ref, arch string) (imageInfo, erro
 	for _, l := range manifest.Layers {
 		layers = append(layers, l.Digest.String())
 	}
-	info.fingerprint = IncusFingerprint(manifestDigest.String(), layers)
+	info.fingerprint = IncusFingerprint(digest, layers)
+	info.manifestFingerprint = IncusFingerprint(manifestDigest.String(), layers)
 	info.legacyFingerprint = LegacyIncusFingerprint(layers)
 	// The version is a nicety: an image without a readable configuration
 	// still has a fingerprint.
@@ -216,9 +229,9 @@ func platform(arch string) v1.Platform {
 }
 
 // IncusFingerprint is how Incus 7.7 and later fingerprint an OCI image: the
-// SHA-256 of the digest of the architecture's manifest followed by its layer
-// digests, written one after the other (lxc/incus 1f3b23724,
-// GHSA-4j59-4pqh-f3qm).
+// SHA-256 of the manifest digest skopeo reports for the reference followed by
+// the architecture's layer digests, written one after the other (lxc/incus
+// 1f3b23724, GHSA-4j59-4pqh-f3qm).
 func IncusFingerprint(manifestDigest string, layers []string) string {
 	return LegacyIncusFingerprint(append([]string{manifestDigest}, layers...))
 }
