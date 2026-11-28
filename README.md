@@ -149,8 +149,9 @@ Containers, on hosts and inside guests:
   `podman auto-update`.
 - **Incus OCI application containers** (Incus 6.3+, with skopeo and umoci on
   the host) are devices of their own. The agent asks the registry for the
-  current image and computes its Incus fingerprint (the SHA-256 of the layer
-  digests), so an update is found without pulling it. Upgrading rebuilds the
+  current image and computes its Incus fingerprint (the SHA-256 of the
+  manifest and layer digests since Incus 7.7, of the layer digests alone
+  before; both are accepted), so an update is found without pulling it. Upgrading rebuilds the
   instance from the newer image, like `incus rebuild`: configuration, devices
   and volumes stay, the root file system is replaced. Incus cannot rebuild an
   instance that has snapshots, so the agent takes none (there is no restore

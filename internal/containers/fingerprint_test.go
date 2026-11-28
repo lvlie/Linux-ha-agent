@@ -18,12 +18,18 @@ import (
 )
 
 func TestIncusFingerprint(t *testing.T) {
-	// As Incus computes it: the SHA-256 of the layer digests, concatenated.
-	sum := sha256.Sum256([]byte("sha256:aaasha256:bbb"))
-	if got := IncusFingerprint([]string{"sha256:aaa", "sha256:bbb"}); got != hex.EncodeToString(sum[:]) {
+	// As Incus 7.7 computes it: the SHA-256 of the manifest digest and the
+	// layer digests, concatenated.
+	sum := sha256.Sum256([]byte("sha256:mmmsha256:aaasha256:bbb"))
+	if got := IncusFingerprint("sha256:mmm", []string{"sha256:aaa", "sha256:bbb"}); got != hex.EncodeToString(sum[:]) {
 		t.Fatalf("got %q", got)
 	}
-	if IncusFingerprint([]string{"a", "b"}) != IncusFingerprint([]string{"ab"}) {
+	// As Incus before 7.7 computes it: the layer digests alone.
+	sum = sha256.Sum256([]byte("sha256:aaasha256:bbb"))
+	if got := LegacyIncusFingerprint([]string{"sha256:aaa", "sha256:bbb"}); got != hex.EncodeToString(sum[:]) {
+		t.Fatalf("legacy: got %q", got)
+	}
+	if LegacyIncusFingerprint([]string{"a", "b"}) != LegacyIncusFingerprint([]string{"ab"}) {
 		t.Error("layers are concatenated")
 	}
 }
@@ -78,8 +84,15 @@ func TestRegistryFingerprint(t *testing.T) {
 			d, _ := l.Digest()
 			digests = append(digests, d.String())
 		}
-		if want := IncusFingerprint(digests); got != want {
+		// The architecture's manifest digest, not the index's.
+		manifest, _ := img.Digest()
+		want := IncusFingerprint(manifest.String(), digests)
+		if got != want {
 			t.Errorf("%s: got %s, want %s", arch, got, want)
+		}
+		all, err := r.Fingerprints(context.Background(), ref, arch)
+		if legacy := LegacyIncusFingerprint(digests); err != nil || len(all) != 2 || all[0] != want || all[1] != legacy {
+			t.Errorf("%s: fingerprints %v (%v), want [%s %s]", arch, all, err, want, legacy)
 		}
 	}
 	if fp, _ := r.Fingerprint(context.Background(), ref, "amd64"); len(r.images) != 4 || fp == "" {
