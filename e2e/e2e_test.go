@@ -453,8 +453,19 @@ func TestE2E(t *testing.T) {
 
 	t.Run("upgrade fedora guest with podman", func(t *testing.T) {
 		since := time.Now()
+		probed := make(chan struct{})
+		go func() {
+			defer close(probed)
+			// DEBUG: probe DNS in the guest during and after the upgrade.
+			out, _ := exec.Command("incus", "exec", "podman-fed", "--", "sh", "-c",
+				`for i in $(seq 1 240); do printf "%s " "$(date +%T.%N | cut -c1-10)"; getent hosts mirrors.fedoraproject.org >/dev/null && echo ok || { echo FAIL; resolvectl status 2>&1 | head -30; ip -br a; ip r; }; sleep 0.25; done`).CombinedOutput()
+			t.Logf("DNS probe:\n%s", out)
+		}()
 		b.command(t, device("podman_fed"), "upgrade")
-		waitForRun(t, b, device("podman_fed"), since)
+		run := waitForRun(t, b, device("podman_fed"), since)
+		t.Logf("fedora steps: %v", run["steps"])
+		t.Logf("after upgrade:\n%s", incus(t, "exec", "podman-fed", "--", "sh", "-c", "date +%T; ip -br a; ip r; podman network ls; cat /etc/resolv.conf; resolvectl status | head -30; journalctl --no-pager -n 60 -u systemd-resolved -u systemd-networkd; rpm -qa --last | head -15"))
+		<-probed
 		eventually(t, 10*time.Minute, "fedora up to date", func() bool {
 			return b.state(device("podman_fed"))["updates"] == 0.0
 		})
